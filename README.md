@@ -20,6 +20,7 @@ The app reads account and usage data through the local Codex App Server. It does
 - Allows an available earned reset to be redeemed after confirmation.
 - Recovers safely from interrupted reset requests by reusing the original idempotency key.
 - Reconnects automatically with bounded exponential backoff after App Server interruptions.
+- Offers device-code sign-in if the browser flow cannot be opened.
 
 ## Requirements
 
@@ -27,6 +28,8 @@ The app reads account and usage data through the local Codex App Server. It does
 - An existing Codex CLI installation.
 - A Codex session authenticated with a ChatGPT account.
 - Swift 6 toolchain or Xcode for building from source.
+
+Full Xcode is recommended for running tests with the standard `swift test` command. Apple Command Line Tools alone may not expose the `Testing` framework to Swift Package Manager.
 
 API-key authentication does not expose ChatGPT subscription quota information, so the monitor requires a ChatGPT-authenticated Codex session.
 
@@ -80,7 +83,7 @@ swift run CodexMonitor
 6. Enable **Launch at Login** if you want the monitor to start automatically.
 7. Quit the application from the menu bar panel when it is no longer needed.
 
-The current application interface is displayed in Traditional Chinese.
+The application interface is in English.
 
 ## Usage Updates
 
@@ -122,7 +125,7 @@ Launch Codex once from Terminal and confirm it works in your current environment
 
 ### The app shows that sign-in is required
 
-Authenticate the existing Codex CLI session with your ChatGPT account, then refresh or restart the monitor.
+Use the browser sign-in button or the device-code fallback. An API-key-only Codex session does not expose ChatGPT subscription quota data.
 
 ### Usage data is stale or unavailable
 
@@ -141,6 +144,16 @@ swift build
 swift test
 ```
 
+If you only have Apple Command Line Tools and `swift test` reports `no such module 'Testing'`, install full Xcode or run the tests with the CLT framework paths:
+
+```sh
+swift test \
+  -Xswiftc -F -Xswiftc /Library/Developer/CommandLineTools/Library/Developer/Frameworks \
+  -Xlinker -F -Xlinker /Library/Developer/CommandLineTools/Library/Developer/Frameworks \
+  -Xlinker -rpath -Xlinker /Library/Developer/CommandLineTools/Library/Developer/Frameworks \
+  -Xlinker -rpath -Xlinker /Library/Developer/CommandLineTools/Library/Developer/usr/lib
+```
+
 Create a release-mode macOS app bundle:
 
 ```sh
@@ -156,7 +169,10 @@ Support/Info.plist          macOS bundle metadata
 scripts/build-app.sh        Local app packaging script
 docs/ARCHITECTURE.md        Architecture, reliability, and security notes
 CHANGELOG.md                Version history
+.github/workflows/ci.yml    macOS build and test checks
 ```
+
+An optional read-only integration check can be run against your installed Codex CLI by setting `CODEX_MONITOR_REAL_SMOKE=1` when running the tests. It reads account and quota data but never consumes a reset. Leave this variable unset for the regular offline test suite.
 
 ## Documentation
 

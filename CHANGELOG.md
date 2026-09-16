@@ -1,44 +1,54 @@
 # Changelog
 
-本專案的功能、可靠性與使用者可見變更都記錄於此。格式依循 Keep a Changelog，版本採 Semantic Versioning。
+User-visible changes follow the Keep a Changelog format. Versions use Semantic Versioning.
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.3.0] - 2026-09-16
+
 ### Added
 
-- 尚無。
+- Explicit unsupported-account and incompatible-response states.
+- Device-code sign-in when browser sign-in is unavailable.
+- Fail-closed reset recovery and a confirmed way to discard a corrupt recovery record.
+- Wake-triggered refresh, resolved Codex CLI path diagnostics, and bounded JSONL framing.
+- Ordered App Server output processing and clean child-process shutdown on app quit.
+- Injectable App Server transport with request correlation, timeout, cancellation, and termination tests.
+- macOS GitHub Actions build, test, package, plist, and signature checks.
+- Additional parser, authentication, reset recovery, and JSONL tests.
+- Opt-in read-only integration test against the locally installed Codex CLI.
+
+### Changed
+
+- Application interface, errors, architecture documentation, and changelog now use English.
+- Signed-out and unsupported account states clear any previous account's visible quota.
+- All quota countdowns share one one-second timeline.
 
 ## [0.2.0] - 2026-09-16
 
 ### Added
 
-- 為所有 App Server requests 加入 15 秒逾時與 Swift task cancellation。
-- 新增 2、4、8、16、30 秒上限的 exponential reconnect backoff，並加入少量 jitter。
-- 將未確認的 reset attempt 與 idempotency key 保存於本機，斷線或逾時後重試會沿用同一個 key。
-- 新增登入 URL allowlist，只允許 HTTPS 的 OpenAI 與 ChatGPT 網域。
-- 新增 App Server malformed JSONL 錯誤狀態，不再靜默忽略。
-- 新增 reset retry、backoff 與登入網址安全測試；測試總數增加至 9 項。
-- 新增完整架構與維護文件 `docs/ARCHITECTURE.md`。
+- 15-second request timeout and Swift task cancellation.
+- Exponential reconnection backoff with jitter.
+- Locally persisted reset attempt and idempotency key for safe retries.
+- HTTPS login URL allowlist and malformed JSONL reporting.
+- Architecture documentation and reset, backoff, and URL tests.
 
 ### Changed
 
-- 將 App Server client 從手動 dispatch queue 與 `@unchecked Sendable` 改為 Swift actor 隔離。
-- 用量更新期間收到新通知時，會在目前 refresh 完成後補做一次同步。
-- App Server pipe 不存在或 process 已停止時會明確失敗，不再使用 optional write。
-- App Server client version 改由 App bundle version 取得，避免版本字串分散。
-- 每次打包前清除舊 `.app` bundle，避免殘留過期資源。
-
-### Security
-
-- Reset request 在無法保存 recovery state 時不會送出。
-- Reset 結果不確定時保留 recovery state，避免使用新的 key 意外消耗第二個 reset。
+- App Server client now uses Swift actor isolation.
+- Usage notifications received during refresh schedule one follow-up refresh.
+- Missing pipes and stopped processes fail requests explicitly.
+- App Server client version comes from the app bundle.
+- Packaging removes any older app bundle before rebuilding.
 
 ## [0.1.0] - 2026-09-16
 
 ### Added
 
-- 初始 macOS 14+ menu bar app。
-- 顯示 ChatGPT 方案、Codex quota windows、用量百分比與重置倒數。
-- App Server event update 與 60 秒 polling。
-- 浮動置頂視窗、ChatGPT 登入、Login Item 與 earned reset 兌換。
-- 本機 `.app` 打包及 ad-hoc signing script。
+- Initial macOS 14+ menu bar app with plan, quota windows, percentages, and reset countdowns.
+- App Server notification updates and 60-second polling.
+- Floating window, ChatGPT browser login, Launch at Login, and earned reset redemption.
+- Local app packaging with ad-hoc signing.

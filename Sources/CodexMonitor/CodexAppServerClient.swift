@@ -10,10 +10,38 @@ protocol CodexService: AnyObject {
     func events() async -> AsyncStream<CodexServiceEvent>
     func start() async throws
     func stop() async
-    func fetchAccount() async throws -> AccountStatus?
+    func fetchAccount() async throws -> AccountSnapshot
     func fetchUsage() async throws -> UsageSnapshot
     func consumeReset(creditID: String?, idempotencyKey: String) async throws -> ResetOutcome
     func beginChatGPTLogin() async throws -> URL
+    func beginDeviceCodeLogin() async throws -> DeviceCodeLogin
+}
+
+struct JSONLMessageBuffer {
+    private var buffer = Data()
+    private let maximumLineSize = 1_048_576
+
+    mutating func append(_ data: Data) -> ([[String: Any]], Bool) {
+        buffer.append(data)
+        var messages: [[String: Any]] = []
+        var malformed = false
+        while let newline = buffer.firstIndex(of: 0x0A) {
+            let line = Data(buffer[..<newline])
+            buffer.removeSubrange(...newline)
+            guard !line.isEmpty else { continue }
+            guard line.count <= maximumLineSize,
+                  let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
+                malformed = true
+                continue
+            }
+            messages.append(object)
+        }
+        if buffer.count > maximumLineSize {
+            buffer.removeAll(keepingCapacity: false)
+            malformed = true
+        }
+        return (messages, malformed)
+    }
 }
 
 actor CodexAppServerClient: CodexService {
@@ -23,17 +51,18 @@ actor CodexAppServerClient: CodexService {
     }
 
     private let requestTimeout: Duration
-    private var process: Process?
-    private var input: Pipe?
-    private var output: Pipe?
-    private var outputBuffer = Data()
+    private let transport: AppServerTransport
+    private var outputBuffer = JSONLMessageBuffer()
     private var nextRequestID = 1
     private var pending: [Int: PendingRequest] = [:]
     private var eventContinuation: AsyncStream<CodexServiceEvent>.Continuation?
-    private var stopping = false
+    private var outputContinuation: AsyncStream<Data>.Continuation?
+    private var outputTask: Task<Void, Never>?
+    private var connectionGeneration = 0
 
-    init(requestTimeout: Duration = .seconds(15)) {
+    init(requestTimeout: Duration = .seconds(15), transport: AppServerTransport = ProcessAppServerTransport()) {
         self.requestTimeout = requestTimeout
+        self.transport = transport
     }
 
     func events() -> AsyncStream<CodexServiceEvent> {
@@ -43,34 +72,36 @@ actor CodexAppServerClient: CodexService {
     }
 
     func start() async throws {
-        if process?.isRunning == true { return }
-        let executable = try Self.locateCodex()
-        try launch(executable: executable)
+        if transport.isRunning { return }
+        try launch()
 
-        _ = try await request(method: "initialize", params: [
-            "clientInfo": [
-                "name": "codex_usage_monitor",
-                "title": "Codex Usage Monitor",
-                "version": Self.appVersion
-            ]
-        ])
-        try sendNotification(method: "initialized", params: [:])
+        do {
+            _ = try await request(method: "initialize", params: [
+                "clientInfo": [
+                    "name": "codex_usage_monitor",
+                    "title": "Codex Usage Monitor",
+                    "version": Self.appVersion
+                ]
+            ])
+            try sendNotification(method: "initialized", params: [:])
+        } catch {
+            stop()
+            throw error
+        }
     }
 
     func stop() {
-        stopping = true
-        output?.fileHandleForReading.readabilityHandler = nil
-        process?.terminationHandler = nil
-        if process?.isRunning == true { process?.terminate() }
+        connectionGeneration += 1
+        outputContinuation?.finish()
+        outputContinuation = nil
+        outputTask?.cancel()
+        outputTask = nil
+        transport.stop()
         failPending(with: CodexMonitorError.disconnected)
-        process = nil
-        input = nil
-        output = nil
-        outputBuffer.removeAll(keepingCapacity: false)
-        stopping = false
+        outputBuffer = JSONLMessageBuffer()
     }
 
-    func fetchAccount() async throws -> AccountStatus? {
+    func fetchAccount() async throws -> AccountSnapshot {
         let result = try await request(method: "account/read", params: ["refreshToken": false])
         return try UsageParser.account(from: result)
     }
@@ -82,13 +113,13 @@ actor CodexAppServerClient: CodexService {
 
     func consumeReset(creditID: String?, idempotencyKey: String) async throws -> ResetOutcome {
         guard !idempotencyKey.isEmpty else {
-            throw CodexMonitorError.invalidResponse("Reset idempotency key 不可為空")
+            throw CodexMonitorError.invalidResponse("Reset idempotency key cannot be empty")
         }
         var params: [String: Any] = ["idempotencyKey": idempotencyKey]
         if let creditID { params["creditId"] = creditID }
         let result = try await request(method: "account/rateLimitResetCredit/consume", params: params)
         guard let raw = result["outcome"] as? String, let outcome = ResetOutcome(rawValue: raw) else {
-            throw CodexMonitorError.invalidResponse("缺少 reset outcome")
+            throw CodexMonitorError.invalidResponse("Missing reset outcome")
         }
         return outcome
     }
@@ -104,44 +135,43 @@ actor CodexAppServerClient: CodexService {
             let url = URL(string: rawURL),
             Self.isAllowedAuthenticationURL(url)
         else {
-            throw CodexMonitorError.invalidResponse("登入網址未通過安全檢查")
+            throw CodexMonitorError.invalidResponse("Login URL failed security validation")
         }
         return url
     }
 
-    private func launch(executable: URL) throws {
-        let process = Process()
-        let input = Pipe()
-        let output = Pipe()
-        process.executableURL = executable
-        process.arguments = ["app-server", "--listen", "stdio://"]
-        process.standardInput = input
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-
-        output.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { return }
-            Task { await self?.receive(data) }
+    func beginDeviceCodeLogin() async throws -> DeviceCodeLogin {
+        let result = try await request(method: "account/login/start", params: ["type": "chatgptDeviceCode"])
+        guard let loginID = result["loginId"] as? String, !loginID.isEmpty,
+              let code = result["userCode"] as? String, !code.isEmpty,
+              let rawURL = result["verificationUrl"] as? String,
+              let url = URL(string: rawURL), Self.isAllowedAuthenticationURL(url) else {
+            throw CodexMonitorError.invalidResponse("Invalid device-code login response")
         }
-        process.terminationHandler = { [weak self, weak process] _ in
-            guard let process else { return }
-            Task { await self?.processTerminated(process) }
-        }
+        return DeviceCodeLogin(loginID: loginID, verificationURL: url, userCode: code)
+    }
 
+    private func launch() throws {
+        connectionGeneration += 1
+        let generation = connectionGeneration
+        let (outputStream, continuation) = AsyncStream<Data>.makeStream()
+        outputContinuation = continuation
         do {
-            try process.run()
-            self.process = process
-            self.input = input
-            self.output = output
+            try transport.start(onData: { data in continuation.yield(data) }, onTermination: { [weak self] in
+                Task { await self?.transportTerminated(generation: generation) }
+            })
         } catch {
-            output.fileHandleForReading.readabilityHandler = nil
-            throw CodexMonitorError.processLaunch(error.localizedDescription)
+            continuation.finish()
+            outputContinuation = nil
+            throw error
+        }
+        outputTask = Task { [weak self] in
+            for await data in outputStream { await self?.receive(data) }
         }
     }
 
     private func request(method: String, params: [String: Any]) async throws -> [String: Any] {
-        guard process?.isRunning == true else { throw CodexMonitorError.disconnected }
+        guard transport.isRunning else { throw CodexMonitorError.disconnected }
         let id = nextRequestID
         nextRequestID += 1
 
@@ -176,29 +206,21 @@ actor CodexAppServerClient: CodexService {
     }
 
     private func write(_ message: [String: Any]) throws {
-        guard process?.isRunning == true, let input else {
+        guard transport.isRunning else {
             throw CodexMonitorError.disconnected
         }
         guard JSONSerialization.isValidJSONObject(message) else {
-            throw CodexMonitorError.invalidResponse("無法編碼 request")
+            throw CodexMonitorError.invalidResponse("Could not encode request")
         }
         var data = try JSONSerialization.data(withJSONObject: message)
         data.append(0x0A)
-        try input.fileHandleForWriting.write(contentsOf: data)
+        try transport.send(data)
     }
 
     private func receive(_ data: Data) {
-        outputBuffer.append(data)
-        while let newline = outputBuffer.firstIndex(of: 0x0A) {
-            let line = outputBuffer[..<newline]
-            outputBuffer.removeSubrange(...newline)
-            guard !line.isEmpty else { continue }
-            guard let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else {
-                eventContinuation?.yield(.protocolError("Codex App Server 傳回無法解析的 JSONL 訊息。"))
-                continue
-            }
-            handle(object)
-        }
+        let (messages, malformed) = outputBuffer.append(data)
+        if malformed { eventContinuation?.yield(.protocolError("Codex App Server returned malformed JSONL.")) }
+        for message in messages { handle(message) }
     }
 
     private func handle(_ message: [String: Any]) {
@@ -206,13 +228,13 @@ actor CodexAppServerClient: CodexService {
             request.timeoutTask?.cancel()
             if let error = message["error"] as? [String: Any] {
                 request.continuation.resume(
-                    throwing: CodexMonitorError.server(error["message"] as? String ?? "Codex request 失敗")
+                    throwing: CodexMonitorError.server(error["message"] as? String ?? "Codex request failed")
                 )
             } else if let result = message["result"] as? [String: Any] {
                 request.continuation.resume(returning: result)
             } else {
                 request.continuation.resume(
-                    throwing: CodexMonitorError.invalidResponse("request \(id) 沒有 result")
+                    throwing: CodexMonitorError.invalidResponse("Request \(id) has no result")
                 )
             }
             return
@@ -235,14 +257,16 @@ actor CodexAppServerClient: CodexService {
         request.continuation.resume(throwing: CancellationError())
     }
 
-    private func processTerminated(_ terminatedProcess: Process) {
-        guard process === terminatedProcess else { return }
-        output?.fileHandleForReading.readabilityHandler = nil
+    private func transportTerminated(generation: Int) {
+        guard generation == connectionGeneration else { return }
+        outputContinuation?.finish()
+        outputContinuation = nil
+        outputTask?.cancel()
+        outputTask = nil
         failPending(with: CodexMonitorError.disconnected)
-        process = nil
-        input = nil
-        output = nil
-        if !stopping { eventContinuation?.yield(.disconnected) }
+        transport.stop()
+        outputBuffer = JSONLMessageBuffer()
+        eventContinuation?.yield(.disconnected)
     }
 
     private func failPending(with error: Error) {
@@ -255,7 +279,8 @@ actor CodexAppServerClient: CodexService {
     }
 
     static func isAllowedAuthenticationURL(_ url: URL) -> Bool {
-        guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased() else { return false }
+        guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased(),
+              url.user == nil, url.password == nil, url.port == nil else { return false }
         return host == "chatgpt.com"
             || host.hasSuffix(".chatgpt.com")
             || host == "openai.com"
@@ -272,7 +297,12 @@ actor CodexAppServerClient: CodexService {
             "/opt/homebrew/bin/codex",
             "/usr/local/bin/codex"
         ]
-        if let path = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+        if let path = candidates.first(where: { candidate in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: candidate, isDirectory: &isDirectory)
+                && !isDirectory.boolValue
+                && FileManager.default.isExecutableFile(atPath: candidate)
+        }) {
             return URL(fileURLWithPath: path)
         }
         throw CodexMonitorError.cliNotFound

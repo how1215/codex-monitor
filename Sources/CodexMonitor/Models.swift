@@ -7,17 +7,32 @@ enum MonitorPhase: Equatable {
     case signedOut
     case cliMissing
     case offline
+    case unsupportedAuth
+    case incompatibleResponse
 
     var label: String {
         switch self {
-        case .loading: "連線中"
-        case .ready: "即時"
-        case .stale: "資料可能已過期"
-        case .signedOut: "尚未登入"
-        case .cliMissing: "找不到 Codex CLI"
-        case .offline: "無法連線"
+        case .loading: "Connecting"
+        case .ready: "Live"
+        case .stale: "Data may be stale"
+        case .signedOut: "Signed out"
+        case .cliMissing: "Codex CLI not found"
+        case .offline: "Offline"
+        case .unsupportedAuth: "Unsupported account"
+        case .incompatibleResponse: "Incompatible response"
         }
     }
+}
+
+struct AccountSnapshot: Equatable {
+    let account: AccountStatus?
+    let requiresOpenAIAuth: Bool
+}
+
+struct DeviceCodeLogin: Equatable {
+    let loginID: String
+    let verificationURL: URL
+    let userCode: String
 }
 
 struct AccountStatus: Equatable {
@@ -26,7 +41,7 @@ struct AccountStatus: Equatable {
     let planType: String?
 
     var planLabel: String {
-        guard let planType, !planType.isEmpty else { return "未知方案" }
+        guard let planType, !planType.isEmpty else { return "Unknown plan" }
         return planType.replacingOccurrences(of: "_", with: " ").capitalized
     }
 }
@@ -51,15 +66,15 @@ struct RateLimitWindow: Identifiable, Equatable {
 
     var durationLabel: String {
         if windowDurationMinutes % 10_080 == 0 {
-            return "\(windowDurationMinutes / 10_080) 週用量"
+            return "\(windowDurationMinutes / 10_080)-week window"
         }
         if windowDurationMinutes % 1_440 == 0 {
-            return "\(windowDurationMinutes / 1_440) 天用量"
+            return "\(windowDurationMinutes / 1_440)-day window"
         }
         if windowDurationMinutes % 60 == 0 {
-            return "\(windowDurationMinutes / 60) 小時用量"
+            return "\(windowDurationMinutes / 60)-hour window"
         }
-        return "\(windowDurationMinutes) 分鐘用量"
+        return "\(windowDurationMinutes)-minute window"
     }
 }
 
@@ -108,15 +123,15 @@ enum CodexMonitorError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .cliNotFound:
-            "找不到 Codex CLI。請先安裝 Codex，或確認 codex 位於常用的執行路徑。"
+            "Codex CLI was not found. Check that codex is available in your PATH."
         case .processLaunch(let message):
-            "無法啟動 Codex App Server：\(message)"
+            "Could not start Codex App Server: \(message)"
         case .disconnected:
-            "Codex App Server 已中斷。"
+            "Codex App Server disconnected."
         case .requestTimedOut(let method):
-            "Codex request 逾時（\(method)）。"
+            "Codex request timed out (\(method))."
         case .invalidResponse(let message):
-            "Codex 回傳了無法辨識的資料：\(message)"
+            "Codex returned an unrecognized response: \(message)"
         case .server(let message):
             message
         }
@@ -124,16 +139,21 @@ enum CodexMonitorError: LocalizedError, Equatable {
 }
 
 enum UsageParser {
-    static func account(from result: [String: Any]) throws -> AccountStatus? {
-        guard let raw = result["account"], !(raw is NSNull) else { return nil }
-        guard let account = raw as? [String: Any], let type = account["type"] as? String else {
-            throw CodexMonitorError.invalidResponse("缺少 account.type")
+    static func account(from result: [String: Any]) throws -> AccountSnapshot {
+        guard let requiresAuth = result["requiresOpenaiAuth"] as? Bool else {
+            throw CodexMonitorError.invalidResponse("Missing requiresOpenaiAuth")
         }
-        return AccountStatus(
+        guard let raw = result["account"], !(raw is NSNull) else {
+            return AccountSnapshot(account: nil, requiresOpenAIAuth: requiresAuth)
+        }
+        guard let account = raw as? [String: Any], let type = account["type"] as? String else {
+            throw CodexMonitorError.invalidResponse("Missing account.type")
+        }
+        return AccountSnapshot(account: AccountStatus(
             authType: type,
             email: account["email"] as? String,
             planType: account["planType"] as? String
-        )
+        ), requiresOpenAIAuth: requiresAuth)
     }
 
     static func usage(from result: [String: Any], now: Date = Date()) throws -> UsageSnapshot {

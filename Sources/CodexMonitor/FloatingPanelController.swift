@@ -18,7 +18,7 @@ final class FloatingPanelController: ObservableObject {
                 backing: .buffered,
                 defer: false
             )
-            panel.title = "Codex 用量"
+            panel.title = "Codex Usage"
             panel.level = .floating
             panel.isFloatingPanel = true
             panel.hidesOnDeactivate = false

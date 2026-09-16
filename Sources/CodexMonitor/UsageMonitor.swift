@@ -10,6 +10,9 @@ final class UsageMonitor: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var isResetting = false
     @Published private(set) var hasPendingResetAttempt = false
+    @Published private(set) var resetRecoveryBlocked = false
+    @Published private(set) var deviceCodeLogin: DeviceCodeLogin?
+    @Published private(set) var codexPath: String?
     @Published private(set) var message: String?
     @Published var launchAtLogin = false
 
@@ -22,6 +25,7 @@ final class UsageMonitor: ObservableObject {
     private var reconnectAttempt = 0
     private var refreshRequested = false
     private var hasStarted = false
+    private var wakeObserver: NSObjectProtocol?
 
     init(
         service: CodexService = CodexAppServerClient(),
@@ -29,7 +33,8 @@ final class UsageMonitor: ObservableObject {
     ) {
         self.service = service
         self.resetAttemptStore = resetAttemptStore ?? ResetAttemptStore()
-        hasPendingResetAttempt = self.resetAttemptStore.load() != nil
+        do { hasPendingResetAttempt = try self.resetAttemptStore.load() != nil }
+        catch { resetRecoveryBlocked = true }
         launchAtLogin = SMAppService.mainApp.status == .enabled
         start()
     }
@@ -37,6 +42,11 @@ final class UsageMonitor: ObservableObject {
     func start() {
         guard !hasStarted else { return }
         hasStarted = true
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in await self?.refresh() }
+        }
         eventTask = Task { [weak self, service] in
             let events = await service.events()
             for await event in events {
@@ -47,13 +57,17 @@ final class UsageMonitor: ObservableObject {
         connect()
     }
 
-    func stop() {
+    func stop() async {
         hasStarted = false
         eventTask?.cancel()
         connectionTask?.cancel()
         pollingTask?.cancel()
         reconnectTask?.cancel()
-        Task { await service.stop() }
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+            self.wakeObserver = nil
+        }
+        await service.stop()
     }
 
     func connect() {
@@ -77,19 +91,31 @@ final class UsageMonitor: ObservableObject {
         }
 
         do {
-            let fetchedAccount = try await service.fetchAccount()
-            account = fetchedAccount
-            guard fetchedAccount != nil else {
-                phase = .signedOut
+            let snapshot = try await service.fetchAccount()
+            account = snapshot.account
+            guard let fetchedAccount = snapshot.account else {
+                usage = nil
+                phase = snapshot.requiresOpenAIAuth ? .signedOut : .unsupportedAuth
                 message = nil
+                return
+            }
+            guard fetchedAccount.authType == "chatgpt" else {
+                usage = nil
+                phase = .unsupportedAuth
+                message = "Sign in to Codex with ChatGPT to view subscription limits."
                 return
             }
             let fetchedUsage = try await service.fetchUsage()
             usage = fetchedUsage
             phase = .ready
+            deviceCodeLogin = nil
             message = nil
         } catch is CancellationError {
             return
+        } catch let error as CodexMonitorError {
+            if case .invalidResponse = error { phase = .incompatibleResponse }
+            else { phase = usage == nil ? .offline : .stale }
+            message = error.localizedDescription
         } catch {
             phase = usage == nil ? .offline : .stale
             message = error.localizedDescription
@@ -99,15 +125,34 @@ final class UsageMonitor: ObservableObject {
     func signIn() async {
         do {
             let url = try await service.beginChatGPTLogin()
-            NSWorkspace.shared.open(url)
+            guard NSWorkspace.shared.open(url) else {
+                message = "Could not open the browser. Use device-code sign-in instead."
+                return
+            }
         } catch {
             message = error.localizedDescription
         }
     }
 
+    func signInWithDeviceCode() async {
+        do {
+            deviceCodeLogin = try await service.beginDeviceCodeLogin()
+            message = nil
+        } catch {
+            message = error.localizedDescription
+        }
+    }
+
+    func discardResetRecovery() {
+        resetAttemptStore.clear()
+        resetRecoveryBlocked = false
+        hasPendingResetAttempt = false
+        message = "Reset recovery record discarded. Verify your account before another reset."
+    }
+
     func consumeReset() async {
         guard
-            !isResetting,
+            !isResetting, !resetRecoveryBlocked,
             let usage,
             usage.availableResetCount > 0 || hasPendingResetAttempt
         else { return }
@@ -115,7 +160,14 @@ final class UsageMonitor: ObservableObject {
         defer { isResetting = false }
 
         let attempt: PendingResetAttempt
-        if let pendingAttempt = resetAttemptStore.load() {
+        let pendingAttempt: PendingResetAttempt?
+        do { pendingAttempt = try resetAttemptStore.load() }
+        catch {
+            resetRecoveryBlocked = true
+            message = error.localizedDescription
+            return
+        }
+        if let pendingAttempt {
             attempt = pendingAttempt
         } else {
             attempt = PendingResetAttempt(
@@ -127,7 +179,7 @@ final class UsageMonitor: ObservableObject {
                 try resetAttemptStore.save(attempt)
                 hasPendingResetAttempt = true
             } catch {
-                message = "無法安全保存 Reset 狀態，因此未送出重置要求。"
+                message = "Could not safely save reset state. No reset request was sent."
                 return
             }
         }
@@ -141,15 +193,15 @@ final class UsageMonitor: ObservableObject {
             hasPendingResetAttempt = false
             let outcomeMessage: String
             switch outcome {
-            case .reset: outcomeMessage = "用量已重置。"
-            case .alreadyRedeemed: outcomeMessage = "此重置已完成。"
-            case .nothingToReset: outcomeMessage = "目前沒有需要重置的用量視窗。"
-            case .noCredit: outcomeMessage = "帳號目前沒有可用的 reset。"
+            case .reset: outcomeMessage = "Usage was reset."
+            case .alreadyRedeemed: outcomeMessage = "This reset was already completed."
+            case .nothingToReset: outcomeMessage = "No eligible usage window needs a reset."
+            case .noCredit: outcomeMessage = "No earned reset is available."
             }
             await refresh()
             message = outcomeMessage
         } catch {
-            message = "Reset 結果尚未確認。再次操作時會安全重用同一個識別碼。\n\(error.localizedDescription)"
+            message = "Reset outcome is unconfirmed. Retrying will reuse the same identifier.\n\(error.localizedDescription)"
         }
     }
 
@@ -164,12 +216,13 @@ final class UsageMonitor: ObservableObject {
             message = nil
         } catch {
             launchAtLogin = SMAppService.mainApp.status == .enabled
-            message = "無法更新開機啟動設定：\(error.localizedDescription)"
+            message = "Could not update Launch at Login: \(error.localizedDescription)"
         }
     }
 
     private func beginConnection() {
         connectionTask?.cancel()
+        codexPath = (try? CodexAppServerClient.locateCodex())?.path
         phase = usage == nil ? .loading : .stale
         connectionTask = Task { [weak self, service] in
             guard let self else { return }
@@ -183,6 +236,11 @@ final class UsageMonitor: ObservableObject {
             } catch let error as CodexMonitorError where error == .cliNotFound {
                 phase = .cliMissing
                 message = error.localizedDescription
+            } catch let error as CodexMonitorError {
+                if case .invalidResponse = error { phase = .incompatibleResponse }
+                else { phase = usage == nil ? .offline : .stale }
+                message = error.localizedDescription
+                scheduleReconnect()
             } catch {
                 phase = usage == nil ? .offline : .stale
                 message = error.localizedDescription
@@ -224,7 +282,7 @@ final class UsageMonitor: ObservableObject {
         reconnectTask?.cancel()
         reconnectAttempt += 1
         let delay = ReconnectPolicy.delaySeconds(forAttempt: reconnectAttempt)
-        message = "連線中斷，約 \(Int(ceil(delay))) 秒後重新連線。"
+        message = "Connection lost. Reconnecting in about \(Int(ceil(delay))) seconds."
         reconnectTask = Task { [weak self, service] in
             do {
                 try await Task.sleep(for: .milliseconds(Int64(delay * 1_000)))

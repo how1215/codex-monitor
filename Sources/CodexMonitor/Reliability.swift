@@ -13,6 +13,18 @@ struct PendingResetAttempt: Codable, Equatable {
     let startedAt: Date
 }
 
+enum ResetStoreError: LocalizedError {
+    case corrupted
+    case persistenceFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .corrupted: "The saved reset recovery record is unreadable. No new reset will be sent."
+        case .persistenceFailed: "Could not persist reset recovery. No reset request was sent."
+        }
+    }
+}
+
 @MainActor
 final class ResetAttemptStore {
     private let defaults: UserDefaults
@@ -23,13 +35,19 @@ final class ResetAttemptStore {
         self.key = key
     }
 
-    func load() -> PendingResetAttempt? {
+    func load() throws -> PendingResetAttempt? {
         guard let data = defaults.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(PendingResetAttempt.self, from: data)
+        guard let attempt = try? JSONDecoder().decode(PendingResetAttempt.self, from: data),
+              !attempt.idempotencyKey.isEmpty else { throw ResetStoreError.corrupted }
+        return attempt
     }
 
     func save(_ attempt: PendingResetAttempt) throws {
-        defaults.set(try JSONEncoder().encode(attempt), forKey: key)
+        let data = try JSONEncoder().encode(attempt)
+        defaults.set(data, forKey: key)
+        guard defaults.synchronize(), defaults.data(forKey: key) == data else {
+            throw ResetStoreError.persistenceFailed
+        }
     }
 
     func clear() {
