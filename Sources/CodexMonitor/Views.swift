@@ -4,25 +4,29 @@ import SwiftUI
 struct MonitorView: View {
     @ObservedObject var monitor: UsageMonitor
     let showFloatingWindow: () -> Void
+    var isFloatingWindow = false
     @State private var confirmsReset = false
     @State private var confirmsDiscard = false
+    @State private var isVisible = false
+    @State private var showsSettings = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
             Divider()
-            content
-            if let message = monitor.message {
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            if isFloatingWindow {
+                ScrollView { details }
+                    .frame(minHeight: 120)
+            } else {
+                details
             }
             Divider()
             actions
         }
         .padding(18)
-        .frame(width: 360)
+        .frame(minWidth: 340, idealWidth: 360, maxWidth: .infinity)
+        .onAppear { isVisible = true }
+        .onDisappear { isVisible = false }
         .confirmationDialog(
             "Use an earned reset?",
             isPresented: $confirmsReset,
@@ -41,6 +45,19 @@ struct MonitorView: View {
         } message: {
             Text("The previous reset outcome may be unknown. Verify your account before attempting another reset.")
         }
+    }
+
+    private var details: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            content
+            if let message = monitor.message {
+                Label(message, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var header: some View {
@@ -120,10 +137,14 @@ struct MonitorView: View {
     private var usageContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let windows = monitor.usage?.windows, !windows.isEmpty {
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    ForEach(windows) { window in
-                        UsageWindowView(window: window, now: context.date)
+                if isVisible {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        ForEach(windows) { window in
+                            UsageWindowView(window: window, now: context.date)
+                        }
                     }
+                } else {
+                    ForEach(windows) { window in UsageWindowView(window: window, now: .now) }
                 }
             } else {
                 Text("No usage windows were returned.")
@@ -148,10 +169,14 @@ struct MonitorView: View {
                     .font(.subheadline)
                 }
 
-                Text("Last updated: \(usage.fetchedAt.formatted(date: .omitted, time: .standard))")
+                Text("Updated \(usage.fetchedAt, style: .relative)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if monitor.phase == .stale { Text("Showing last known data").font(.caption).foregroundStyle(.orange) }
+                if monitor.phase == .stale {
+                    Label("Showing last known data", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             }
         }
     }
@@ -176,10 +201,19 @@ struct MonitorView: View {
                     .disabled(!canReset)
             }
 
-            Toggle("Launch at Login", isOn: Binding(
-                get: { monitor.launchAtLogin },
-                set: { monitor.setLaunchAtLogin($0) }
-            ))
+            DisclosureGroup("Settings & diagnostics", isExpanded: $showsSettings) {
+                Toggle("Launch at Login", isOn: Binding(
+                    get: { monitor.launchAtLogin },
+                    set: { monitor.setLaunchAtLogin($0) }
+                ))
+                if let path = monitor.codexPath {
+                    Text("Codex CLI: \(path)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                }
+            }
             .font(.caption)
 
             HStack {
@@ -194,13 +228,6 @@ struct MonitorView: View {
                 Text("Reset recovery record is unreadable. New resets are blocked.")
                     .font(.caption)
                 Button("Discard Recovery Record") { confirmsDiscard = true }
-            }
-            if let path = monitor.codexPath {
-                Text("Codex CLI: \(path)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .lineLimit(2)
             }
         }
     }

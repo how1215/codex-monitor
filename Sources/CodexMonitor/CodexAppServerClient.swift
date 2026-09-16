@@ -1,7 +1,8 @@
 import Foundation
 
 enum CodexServiceEvent: Equatable {
-    case dataChanged
+    case accountChanged
+    case rateLimitsChanged
     case disconnected
     case protocolError(String)
 }
@@ -241,8 +242,9 @@ actor CodexAppServerClient: CodexService {
         }
 
         guard let method = message["method"] as? String else { return }
-        if method == "account/rateLimits/updated" || method == "account/updated" || method == "account/login/completed" {
-            eventContinuation?.yield(.dataChanged)
+        if method == "account/rateLimits/updated" { eventContinuation?.yield(.rateLimitsChanged) }
+        if method == "account/updated" || method == "account/login/completed" {
+            eventContinuation?.yield(.accountChanged)
         }
     }
 

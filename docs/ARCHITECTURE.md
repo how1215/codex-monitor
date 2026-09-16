@@ -9,7 +9,7 @@ Codex Usage Monitor is a native macOS 14+ menu bar app. It starts the locally in
 | Component | Responsibility |
 | --- | --- |
 | `CodexMonitorApp` | Menu bar scene and shared monitor and floating panel. |
-| `UsageMonitor` | UI state, event-driven refresh, 60-second polling, wake refresh, reconnection, and reset workflow. |
+| `UsageMonitor` | UI state, coalesced event-driven refresh, 60-second polling, wake refresh, reconnection, and reset workflow. |
 | `CodexAppServerClient` | Actor-isolated JSON-RPC request correlation, timeout, cancellation, and server events. |
 | `AppServerTransport` / `ProcessAppServerTransport` | Injectable stdio transport and local Codex child-process lifecycle. |
 | `JSONLMessageBuffer` | Bounded line framing and malformed-message detection. |
@@ -23,8 +23,10 @@ Codex Usage Monitor is a native macOS 14+ menu bar app. It starts the locally in
 1. Locate an executable `codex` in PATH or known local installation paths.
 2. Start `codex app-server --listen stdio://` and complete `initialize` / `initialized`.
 3. Read `account/read`; only a ChatGPT account proceeds to `account/rateLimits/read`.
-4. React to account, login, and rate-limit notifications by fetching a new snapshot. Poll every 60 seconds as a fallback and refresh after system wake.
-5. Compute countdowns locally from official `resetsAt` timestamps using one shared one-second timeline.
+4. Account and login notifications trigger a full refresh. Rate-limit notifications trigger a quota-only refresh after a 250 ms coalescing window. Poll every 60 seconds for a full fallback synchronization and refresh after system wake.
+5. Compute countdowns locally from official `resetsAt` timestamps using one shared one-second timeline while the view is visible.
+
+The menu bar selects the highest `usedPercent` among windows with `windowDurationMins == 300`. It displays a compact color dot and percentage: green below 50%, yellow from 50%, red from 80%, and gray when data is unavailable or stale. Hover help and the accessibility label identify the five-hour Codex context. This is a presentation of the last fetched backend value, not a local usage estimate.
 
 Events arriving during a refresh request one additional synchronization after the current one completes. Account changes clear any previous account's visible quota snapshot.
 

@@ -92,6 +92,47 @@ struct UsageMonitorTests {
         #expect(ReconnectPolicy.delaySeconds(forAttempt: 20, jitter: 0) == 30)
     }
 
+    @Test func menuBarUsesHighestFiveHourWindowAndExactThresholds() {
+        let now = Date()
+        let windows = [
+            RateLimitWindow(id: "short", limitID: "codex", limitName: nil, kind: "primary", usedPercent: 95, windowDurationMinutes: 60, resetsAt: now),
+            RateLimitWindow(id: "five-a", limitID: "codex", limitName: nil, kind: "primary", usedPercent: 49.9, windowDurationMinutes: 300, resetsAt: now),
+            RateLimitWindow(id: "five-b", limitID: "other", limitName: nil, kind: "primary", usedPercent: 80, windowDurationMinutes: 300, resetsAt: now)
+        ]
+        let snapshot = UsageSnapshot(windows: windows, resetCredits: [], availableResetCount: 0, credits: nil, fetchedAt: now)
+        #expect(snapshot.fiveHourUsedPercent == 80)
+        #expect(MenuBarUsageLevel(usedPercent: nil) == .unavailable)
+        #expect(MenuBarUsageLevel(usedPercent: 49.9) == .normal)
+        #expect(MenuBarUsageLevel(usedPercent: 50) == .warning)
+        #expect(MenuBarUsageLevel(usedPercent: 79.9) == .warning)
+        #expect(MenuBarUsageLevel(usedPercent: 80) == .critical)
+    }
+
+    @Test func quotaEventSkipsAccountReadButAccountEventDoesNot() async {
+        let service = FakeCodexService()
+        let monitor = UsageMonitor(service: service, resetAttemptStore: makeResetStore())
+        await waitUntil { monitor.phase == .ready }
+        let originalAccountReads = service.accountFetchCount
+        let originalUsageReads = service.usageFetchCount
+        service.emit(.rateLimitsChanged)
+        await waitUntil { service.usageFetchCount > originalUsageReads }
+        #expect(service.accountFetchCount == originalAccountReads)
+        service.emit(.accountChanged)
+        await waitUntil { service.accountFetchCount > originalAccountReads }
+        await monitor.stop()
+    }
+
+    @Test func burstOfQuotaEventsUsesOneRead() async {
+        let service = FakeCodexService()
+        let monitor = UsageMonitor(service: service, resetAttemptStore: makeResetStore())
+        await waitUntil { monitor.phase == .ready }
+        let originalUsageReads = service.usageFetchCount
+        for _ in 0..<5 { service.emit(.rateLimitsChanged) }
+        await waitUntil { service.usageFetchCount > originalUsageReads }
+        #expect(service.usageFetchCount == originalUsageReads + 1)
+        await monitor.stop()
+    }
+
     @Test func authenticationURLAllowlist() {
         #expect(CodexAppServerClient.isAllowedAuthenticationURL(URL(string: "https://chatgpt.com/auth")!))
         #expect(CodexAppServerClient.isAllowedAuthenticationURL(URL(string: "https://auth.openai.com/login")!))
@@ -121,6 +162,8 @@ private final class FakeCodexService: CodexService {
     var consumedCreditID: String?
     var idempotencyKeys: [String] = []
     var usageFetchCount = 0
+    var accountFetchCount = 0
+    private var eventContinuation: AsyncStream<CodexServiceEvent>.Continuation?
     private let availableResetCount: Int
     private let authType: String
     private var resetFailuresBeforeSuccess: Int
@@ -134,10 +177,14 @@ private final class FakeCodexService: CodexService {
         self.resetFailure = resetFailure
     }
 
-    func events() async -> AsyncStream<CodexServiceEvent> { AsyncStream { _ in } }
+    func events() async -> AsyncStream<CodexServiceEvent> {
+        AsyncStream { continuation in eventContinuation = continuation }
+    }
+    func emit(_ event: CodexServiceEvent) { eventContinuation?.yield(event) }
     func start() async throws {}
     func stop() async {}
     func fetchAccount() async throws -> AccountSnapshot {
+        accountFetchCount += 1
         AccountSnapshot(account: AccountStatus(authType: authType, email: nil, planType: "plus"), requiresOpenAIAuth: true)
     }
     func fetchUsage() async throws -> UsageSnapshot {

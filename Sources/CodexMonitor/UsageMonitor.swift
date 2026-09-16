@@ -22,8 +22,11 @@ final class UsageMonitor: ObservableObject {
     private var connectionTask: Task<Void, Never>?
     private var pollingTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
+    private var eventRefreshTask: Task<Void, Never>?
     private var reconnectAttempt = 0
     private var refreshRequested = false
+    private var refreshNeedsAccount = false
+    private var eventNeedsAccount = false
     private var hasStarted = false
     private var wakeObserver: NSObjectProtocol?
 
@@ -63,6 +66,7 @@ final class UsageMonitor: ObservableObject {
         connectionTask?.cancel()
         pollingTask?.cancel()
         reconnectTask?.cancel()
+        eventRefreshTask?.cancel()
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
             self.wakeObserver = nil
@@ -77,33 +81,42 @@ final class UsageMonitor: ObservableObject {
     }
 
     func refresh() async {
+        await refresh(includeAccount: true)
+    }
+
+    private func refresh(includeAccount: Bool) async {
         if isRefreshing {
             refreshRequested = true
+            refreshNeedsAccount = refreshNeedsAccount || includeAccount
             return
         }
         isRefreshing = true
         defer {
             isRefreshing = false
             if refreshRequested {
+                let needsAccount = refreshNeedsAccount
                 refreshRequested = false
-                Task { await self.refresh() }
+                refreshNeedsAccount = false
+                Task { await self.refresh(includeAccount: needsAccount) }
             }
         }
 
         do {
-            let snapshot = try await service.fetchAccount()
-            account = snapshot.account
-            guard let fetchedAccount = snapshot.account else {
-                usage = nil
-                phase = snapshot.requiresOpenAIAuth ? .signedOut : .unsupportedAuth
-                message = nil
-                return
-            }
-            guard fetchedAccount.authType == "chatgpt" else {
-                usage = nil
-                phase = .unsupportedAuth
-                message = "Sign in to Codex with ChatGPT to view subscription limits."
-                return
+            if includeAccount || account == nil {
+                let snapshot = try await service.fetchAccount()
+                account = snapshot.account
+                guard let fetchedAccount = snapshot.account else {
+                    usage = nil
+                    phase = snapshot.requiresOpenAIAuth ? .signedOut : .unsupportedAuth
+                    message = nil
+                    return
+                }
+                guard fetchedAccount.authType == "chatgpt" else {
+                    usage = nil
+                    phase = .unsupportedAuth
+                    message = "Sign in to Codex with ChatGPT to view subscription limits."
+                    return
+                }
             }
             let fetchedUsage = try await service.fetchUsage()
             usage = fetchedUsage
@@ -266,8 +279,10 @@ final class UsageMonitor: ObservableObject {
 
     private func handle(_ event: CodexServiceEvent) async {
         switch event {
-        case .dataChanged:
-            await refresh()
+        case .accountChanged:
+            scheduleEventRefresh(includeAccount: true)
+        case .rateLimitsChanged:
+            scheduleEventRefresh(includeAccount: false)
         case .disconnected:
             pollingTask?.cancel()
             phase = usage == nil ? .offline : .stale
@@ -275,6 +290,19 @@ final class UsageMonitor: ObservableObject {
         case .protocolError(let detail):
             phase = usage == nil ? .offline : .stale
             message = detail
+        }
+    }
+
+    private func scheduleEventRefresh(includeAccount: Bool) {
+        eventNeedsAccount = eventNeedsAccount || includeAccount
+        guard eventRefreshTask == nil else { return }
+        eventRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, let self else { return }
+            let needsAccount = eventNeedsAccount
+            eventNeedsAccount = false
+            eventRefreshTask = nil
+            await refresh(includeAccount: needsAccount)
         }
     }
 

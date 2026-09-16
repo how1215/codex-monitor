@@ -10,10 +10,10 @@ The app reads account and usage data through the local Codex App Server. It does
 
 ## Features
 
-- Shows the primary usage percentage directly in the macOS menu bar.
+- Shows five-hour usage directly in the macOS menu bar, with green (under 50%), yellow (50–79%), red (80% or more), or gray (unavailable/stale) status.
 - Displays the subscription plan and every rate-limit window returned by Codex.
 - Shows used and remaining percentages with reset countdowns updated every second.
-- Refreshes when Codex reports a usage change and performs a full synchronization every 60 seconds.
+- Refreshes quota when Codex reports a usage change and performs a full account-and-quota synchronization every 60 seconds.
 - Provides a manually refreshable, always-on-top floating window.
 - Supports optional launch at login.
 - Detects signed-out, offline, stale-data, and missing-CLI states.
@@ -93,6 +93,9 @@ The monitor reads usage with `account/rateLimits/read` and listens for `account/
 - A fallback poll runs every 60 seconds.
 - Reset countdowns are calculated locally from the official `resetsAt` timestamp and update every second.
 - The app displays the values reported by the Codex backend; it does not estimate subscription usage from local token counts.
+- Several five-hour windows may be returned; the menu bar uses the highest reported usage among them. If none is available, it displays a neutral status.
+
+To keep the menu bar compact, the visible item contains only a colored dot and percentage. Hover help and the accessibility label identify it as Codex five-hour usage. A gray dot means the value is unavailable or may be stale.
 
 Backend reporting can be delayed, so values may not change immediately after an individual Codex request.
 

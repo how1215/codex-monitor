@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @MainActor
@@ -29,17 +30,51 @@ struct CodexMonitorApp: App {
         MenuBarExtra {
             MonitorView(monitor: monitor) {
                 floatingPanel.toggle {
-                    MonitorView(monitor: monitor, showFloatingWindow: {})
+                    MonitorView(monitor: monitor, showFloatingWindow: {}, isFloatingWindow: true)
                 }
             }
         } label: {
-            Label(menuTitle, systemImage: "gauge.with.dots.needle.33percent")
+            HStack(spacing: 3) {
+                Image(nsImage: menuStatusImage)
+                Text(menuTitle)
+                    .font(.system(size: 12, weight: .medium))
+            }
+            .accessibilityLabel(menuAccessibilityLabel)
+            .help(menuAccessibilityLabel)
         }
         .menuBarExtraStyle(.window)
     }
 
     private var menuTitle: String {
-        guard let used = monitor.usage?.primaryUsedPercent else { return "Codex" }
+        guard let used = monitor.usage?.fiveHourUsedPercent else { return "--%" }
         return "\(Int(used.rounded()))%"
+    }
+
+    private var menuAccessibilityLabel: String {
+        guard let used = monitor.usage?.fiveHourUsedPercent else {
+            return "Codex 5-hour usage unavailable"
+        }
+        let status = monitor.phase == .ready ? "current" : "may be stale"
+        return "Codex 5-hour usage \(Int(used.rounded())) percent, \(status)"
+    }
+
+    private var menuStatusImage: NSImage {
+        let level = monitor.phase == .ready
+            ? MenuBarUsageLevel(usedPercent: monitor.usage?.fiveHourUsedPercent)
+            : .unavailable
+        let color: NSColor
+        switch level {
+        case .normal: color = .systemGreen
+        case .warning: color = .systemYellow
+        case .critical: color = .systemRed
+        case .unavailable: color = .systemGray
+        }
+        let image = NSImage(size: NSSize(width: 10, height: 10), flipped: false) { rect in
+            color.setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+            return true
+        }
+        image.isTemplate = false
+        return image
     }
 }

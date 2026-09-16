@@ -13,7 +13,7 @@ enum MonitorPhase: Equatable {
     var label: String {
         switch self {
         case .loading: "Connecting"
-        case .ready: "Live"
+        case .ready: "Up to date"
         case .stale: "Data may be stale"
         case .signedOut: "Signed out"
         case .cliMissing: "Codex CLI not found"
@@ -102,7 +102,23 @@ struct UsageSnapshot: Equatable {
     let fetchedAt: Date
 
     var nextReset: Date? { windows.map(\.resetsAt).min() }
-    var primaryUsedPercent: Double? { windows.first?.usedPercent }
+    var fiveHourUsedPercent: Double? {
+        windows.filter { $0.windowDurationMinutes == 300 }.map(\.usedPercent).max()
+    }
+}
+
+enum MenuBarUsageLevel: Equatable {
+    case normal
+    case warning
+    case critical
+    case unavailable
+
+    init(usedPercent: Double?) {
+        guard let usedPercent else { self = .unavailable; return }
+        if usedPercent >= 80 { self = .critical }
+        else if usedPercent >= 50 { self = .warning }
+        else { self = .normal }
+    }
 }
 
 enum ResetOutcome: String, Equatable {

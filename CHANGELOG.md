@@ -6,6 +6,25 @@ User-visible changes follow the Keep a Changelog format. Versions use Semantic V
 
 No changes yet.
 
+## [0.4.0] - 2026-09-16
+
+### Added
+
+- A color-coded five-hour usage indicator in the menu bar: green below 50%, yellow from 50%, and red from 80%. Unavailable or stale data uses gray.
+- Accessibility text for the menu bar usage indicator and tests for its threshold behavior.
+
+### Changed
+
+- The menu bar shows only a compact color dot and usage percentage; Codex and five-hour context remain in its accessibility label and hover help.
+- Rate-limit notifications now read quota only; account notifications and the 60-second fallback still perform full synchronization. Closely spaced notifications are coalesced for 250 milliseconds.
+- The one-second countdown timeline runs only while its view is visible.
+- The usage panel scrolls when needed, supports a wider floating window, groups settings and diagnostics, and shows relative update age and clearer stale-data messaging.
+- The floating panel has a minimum size and remembers its frame.
+
+### Fixed
+
+- Restored visible usage bars and quota details when opening the menu bar panel; scrolling remains limited to the floating window.
+
 ## [0.3.0] - 2026-09-16
 
 ### Added
