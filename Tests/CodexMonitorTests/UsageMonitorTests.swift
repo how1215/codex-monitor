@@ -185,7 +185,7 @@ private final class FakeCodexService: CodexService {
     func stop() async {}
     func fetchAccount() async throws -> AccountSnapshot {
         accountFetchCount += 1
-        AccountSnapshot(account: AccountStatus(authType: authType, email: nil, planType: "plus"), requiresOpenAIAuth: true)
+        return AccountSnapshot(account: AccountStatus(authType: authType, email: nil, planType: "plus"), requiresOpenAIAuth: true)
     }
     func fetchUsage() async throws -> UsageSnapshot {
         usageFetchCount += 1
