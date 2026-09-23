@@ -11,6 +11,8 @@ User-visible changes follow the Keep a Changelog format. Versions use Semantic V
 
 ### Changed
 
+- The menu bar panel and floating window now share a system-colored card layout, with a prominent Refresh action, grouped settings, and matching loading and error states. Wider floating windows place the five-hour and one-week cards side by side.
+- The floating window uses a standard macOS title bar and has a working Close Window action.
 - In Energy Saving Mode, visible reset countdowns update by the minute until their final minute, then by the second. Sign-in and earned resets temporarily connect only while needed.
 - The panel removes the redundant five-hour window caption, separates resets and credits from quota, and groups settings into system-style rows.
 

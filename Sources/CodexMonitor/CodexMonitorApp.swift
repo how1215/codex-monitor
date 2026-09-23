@@ -30,7 +30,7 @@ struct CodexMonitorApp: App {
         MenuBarExtra {
             MonitorView(monitor: monitor) {
                 floatingPanel.toggle {
-                    MonitorView(monitor: monitor, showFloatingWindow: {}, isFloatingWindow: true)
+                    MonitorView(monitor: monitor, showFloatingWindow: { floatingPanel.hide() }, isFloatingWindow: true)
                 }
             }
         } label: {

@@ -22,20 +22,25 @@ struct MonitorView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(spacing: 0) {
             header
+                .padding(.horizontal, 18)
+                .padding(.vertical, 16)
             Divider()
-            if isFloatingWindow {
-                ScrollView { details }
-                    .frame(minHeight: 120)
-            } else {
+            ScrollView {
                 details
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(height: isFloatingWindow ? nil : (monitor.usage == nil ? 260 : 500))
+            .frame(maxHeight: isFloatingWindow ? .infinity : nil)
             Divider()
             actions
+                .padding(16)
         }
-        .padding(18)
-        .frame(minWidth: 340, idealWidth: 360, maxWidth: .infinity)
+        .frame(minWidth: 340, idealWidth: isFloatingWindow ? 440 : 360, maxWidth: .infinity)
+        .frame(minHeight: isFloatingWindow ? 340 : nil)
+        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             isVisible = true
             Task { await monitor.refreshIfNeededOnOpen() }
@@ -65,80 +70,119 @@ struct MonitorView: View {
         VStack(alignment: .leading, spacing: 12) {
             content
             if monitor.energySavingMode {
-                Label("Updates paused · Select Refresh for current usage", systemImage: "pause.circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                statusNote("Updates paused · Select Refresh for current usage", icon: "pause.circle")
             }
             if let message = monitor.message {
-                Label(message, systemImage: "info.circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                statusNote(message, icon: "info.circle")
             }
+            settingsSection
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var header: some View {
-        HStack {
+        HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Codex Usage")
-                    .font(.headline)
+                    .font(.title3.weight(.semibold))
                 Text(monitor.account?.planLabel ?? monitor.phase.label)
-                    .font(.subheadline)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Circle()
-                .fill(statusColor)
-                .frame(width: 8, height: 8)
-                .accessibilityHidden(true)
-            Text(monitor.energySavingMode ? "Manual mode" : monitor.phase.label)
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(statusColor)
+                    .frame(width: 7, height: 7)
+                    .accessibilityHidden(true)
+                Text(monitor.energySavingMode ? "Manual mode" : monitor.phase.label)
+            }
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(Color(nsColor: .controlBackgroundColor), in: Capsule())
         }
+    }
+
+    private func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color(nsColor: .separatorColor).opacity(0.35))
+            }
+    }
+
+    private func statusNote(_ text: String, icon: String) -> some View {
+        Label(text, systemImage: icon)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 9))
     }
 
     @ViewBuilder
     private var content: some View {
         switch monitor.phase {
         case .loading where monitor.energySavingMode:
-            EmptyStateView(icon: "pause.circle", title: "No saved usage",
-                           detail: "Select Refresh to load current quota.")
+            card {
+                EmptyStateView(icon: "pause.circle", title: "No saved usage",
+                               detail: "Select Refresh to load current quota.")
+            }
         case .loading:
-            HStack { Spacer(); ProgressView(); Spacer() }
-                .padding(.vertical, 30)
+            card {
+                HStack { Spacer(); ProgressView(); Spacer() }
+                    .padding(.vertical, 30)
+            }
         case .cliMissing:
-            EmptyStateView(
-                icon: "terminal",
-                title: "Codex CLI not found",
-                detail: "Check your Codex CLI path, then select Retry Detection."
-            )
+            card {
+                EmptyStateView(
+                    icon: "terminal",
+                    title: "Codex CLI not found",
+                    detail: "Check your Codex CLI path, then select Retry Detection."
+                )
+            }
         case .signedOut:
-            EmptyStateView(
-                icon: "person.crop.circle.badge.exclamationmark",
-                title: "ChatGPT sign-in required",
-                detail: "Sign in to view Codex subscription limits."
-            )
-            signInActions
+            card {
+                VStack(alignment: .leading, spacing: 12) {
+                    EmptyStateView(
+                        icon: "person.crop.circle.badge.exclamationmark",
+                        title: "ChatGPT sign-in required",
+                        detail: "Sign in to view Codex subscription limits."
+                    )
+                    signInActions
+                }
+            }
         case .unsupportedAuth:
-            EmptyStateView(icon: "person.crop.circle.badge.exclamationmark", title: "Unsupported account", detail: "Codex is not signed in with ChatGPT. Switch the Codex CLI account and refresh.")
-            signInActions
+            card {
+                VStack(alignment: .leading, spacing: 12) {
+                    EmptyStateView(icon: "person.crop.circle.badge.exclamationmark", title: "Unsupported account", detail: "Codex is not signed in with ChatGPT. Switch the Codex CLI account and refresh.")
+                    signInActions
+                }
+            }
         case .incompatibleResponse where monitor.usage == nil:
-            EmptyStateView(icon: "exclamationmark.triangle", title: "Incompatible response", detail: "Update Codex CLI and try again.")
+            card {
+                EmptyStateView(icon: "exclamationmark.triangle", title: "Incompatible response", detail: "Update Codex CLI and try again.")
+            }
         case .offline where monitor.usage == nil:
-            EmptyStateView(
-                icon: "wifi.exclamationmark",
-                title: "Currently offline",
-                detail: "Check your network connection and Codex CLI."
-            )
+            card {
+                EmptyStateView(
+                    icon: "wifi.exclamationmark",
+                    title: "Currently offline",
+                    detail: "Check your network connection and Codex CLI."
+                )
+            }
         default:
             usageContent
         }
     }
 
     private var signInActions: some View {
-        VStack(alignment: .leading) {
+        VStack(alignment: .leading, spacing: 8) {
             Button("Sign in with browser") { Task { await monitor.signIn() } }
                 .buttonStyle(.borderedProminent)
                 .disabled(monitor.isSigningIn)
@@ -162,7 +206,7 @@ struct MonitorView: View {
     }
 
     private var usageContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             if isVisible && monitor.energySavingMode && monitor.usage?.windows.isEmpty == false {
                 usageWindows(now: saverNow)
                     .task(id: countdownTaskID) {
@@ -186,36 +230,63 @@ struct MonitorView: View {
     }
 
     private func usageWindows(now: Date) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if let window = monitor.usage?.fiveHourWindow {
-                quotaSummary(window: window, now: now, compact: false)
+        VStack(alignment: .leading, spacing: 12) {
+            if let fiveHour = monitor.usage?.fiveHourWindow,
+               let oneWeek = monitor.usage?.oneWeekWindow {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 12) {
+                        quotaCard(window: fiveHour, now: now, compact: false)
+                            .frame(minWidth: 220)
+                        quotaCard(window: oneWeek, now: now, compact: true)
+                            .frame(minWidth: 220)
+                    }
+                    VStack(spacing: 12) {
+                        quotaCard(window: fiveHour, now: now, compact: false)
+                        quotaCard(window: oneWeek, now: now, compact: true)
+                    }
+                }
             } else {
-                Text("5-hour limit unavailable")
-                    .foregroundStyle(.secondary)
+                if let fiveHour = monitor.usage?.fiveHourWindow {
+                    quotaCard(window: fiveHour, now: now, compact: false)
+                } else {
+                    card {
+                        Label("5-hour limit unavailable", systemImage: "clock.badge.questionmark")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let oneWeek = monitor.usage?.oneWeekWindow {
+                    quotaCard(window: oneWeek, now: now, compact: true)
+                }
             }
 
             if let usage = monitor.usage {
-                if let window = usage.oneWeekWindow {
-                    if usage.fiveHourWindow != nil { Divider() }
-                    quotaSummary(window: window, now: now, compact: true)
-                }
                 let otherWindows = usage.windows.filter {
                     $0.id != usage.fiveHourWindow?.id && $0.id != usage.oneWeekWindow?.id
                 }
                 if !otherWindows.isEmpty {
-                    DisclosureGroup("Other limits", isExpanded: $showsOtherLimits) {
-                        VStack(alignment: .leading, spacing: 14) {
-                            ForEach(otherWindows) { window in
-                                UsageWindowView(window: window, now: now, isCurrent: monitor.phase == .ready,
-                                                energySavingMode: monitor.energySavingMode)
+                    card {
+                        DisclosureGroup(isExpanded: $showsOtherLimits) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                ForEach(otherWindows) { window in
+                                    UsageWindowView(window: window, now: now, isCurrent: monitor.phase == .ready,
+                                                    energySavingMode: monitor.energySavingMode)
+                                    if window.id != otherWindows.last?.id { Divider() }
+                                }
                             }
+                            .padding(.top, 10)
+                        } label: {
+                            Label("Other limits", systemImage: "chart.bar")
                         }
-                        .padding(.top, 8)
+                        .font(.subheadline)
                     }
-                    .font(.subheadline)
                 }
             }
         }
+    }
+
+    private func quotaCard(window: RateLimitWindow, now: Date, compact: Bool) -> some View {
+        card { quotaSummary(window: window, now: now, compact: compact) }
     }
 
     private var visibleCountdownWindows: [RateLimitWindow] {
@@ -232,24 +303,33 @@ struct MonitorView: View {
     @ViewBuilder
     private var usageMetadata: some View {
         if let usage = monitor.usage {
-            Divider()
-            VStack(spacing: 10) {
-                HStack {
-                    Label("Available resets", systemImage: "arrow.counterclockwise.circle")
-                    Spacer()
-                    Text("\(usage.availableResetCount)")
-                        .monospacedDigit()
-                }
-                if let balance = usage.credits?.balance {
+            card {
+                VStack(spacing: 11) {
                     HStack {
-                        Label("Credits", systemImage: "creditcard")
+                        Label("Available resets", systemImage: "arrow.counterclockwise.circle")
                         Spacer()
-                        Text(balance).monospacedDigit()
+                        Text("\(usage.availableResetCount)")
+                            .monospacedDigit()
+                    }
+                    if let balance = usage.credits?.balance {
+                        Divider()
+                        HStack {
+                            Label("Credits", systemImage: "creditcard")
+                            Spacer()
+                            Text(balance).monospacedDigit()
+                        }
+                    }
+                    Divider()
+                    HStack {
+                        Spacer()
+                        Button("Use Reset", systemImage: "arrow.counterclockwise") {
+                            confirmsReset = true
+                        }
+                        .disabled(!canReset)
                     }
                 }
+                .font(.subheadline)
             }
-            .font(.subheadline)
-            Divider()
 
             if monitor.energySavingMode {
                 Text("Updated \(usage.fetchedAt.formatted(date: .abbreviated, time: .shortened))")
@@ -261,25 +341,26 @@ struct MonitorView: View {
                     .foregroundStyle(.secondary)
             }
             if monitor.phase == .stale {
-                Label("Showing last known data", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+                statusNote("Showing last known data", icon: "exclamationmark.arrow.triangle.2.circlepath")
             }
         }
     }
 
     private func quotaSummary(window: RateLimitWindow, now: Date, compact: Bool) -> some View {
-        VStack(alignment: .leading, spacing: compact ? 5 : 8) {
-            Label(compact ? "1-week remaining" : "5-hour remaining",
-                  systemImage: compact ? "calendar" : "clock")
-                .font(compact ? .caption : .subheadline)
-                .foregroundStyle(.secondary)
+        let accent = monitor.phase == .ready && !monitor.energySavingMode
+            ? MenuBarUsageLevel(usedPercent: window.usedPercent).usageColor : Color.gray
+        return VStack(alignment: .leading, spacing: compact ? 5 : 8) {
+            HStack(spacing: 6) {
+                Image(systemName: compact ? "calendar" : "clock")
+                    .foregroundStyle(accent)
+                Text(compact ? "1-week remaining" : "5-hour remaining")
+            }
+            .font(compact ? .caption : .subheadline)
             Text("\(Int(window.remainingPercent.rounded()))%")
                 .font(.system(size: compact ? 22 : 32, weight: .semibold).monospacedDigit())
                 .accessibilityLabel("\(window.durationLabel) quota \(Int(window.remainingPercent.rounded())) percent remaining")
             ProgressView(value: window.remainingPercent, total: 100)
-                .tint(monitor.phase == .ready && !monitor.energySavingMode
-                    ? MenuBarUsageLevel(usedPercent: window.usedPercent).usageColor : .gray)
+                .tint(accent)
                 .accessibilityLabel("\(window.durationLabel) quota remaining")
                 .accessibilityValue("\(Int(window.remainingPercent.rounded())) percent remaining")
             Text("\(Int(window.usedPercent.rounded()))% used")
@@ -303,19 +384,34 @@ struct MonitorView: View {
                 } label: {
                     Label(monitor.isRefreshing ? "Refreshing" : "Refresh", systemImage: "arrow.clockwise")
                 }
+                .buttonStyle(.borderedProminent)
                 .disabled(monitor.isRefreshing || monitor.isManualOperationInProgress || monitor.isSwitchingMode
                           || (monitor.phase == .loading && !monitor.energySavingMode))
 
-                Button("Floating Window", systemImage: "macwindow.on.rectangle") {
+                Button(isFloatingWindow ? "Close Window" : "Floating Window",
+                       systemImage: isFloatingWindow ? "xmark" : "macwindow.on.rectangle") {
                     showFloatingWindow()
                 }
-
                 Spacer()
-
-                Button("Use Reset") { confirmsReset = true }
-                    .disabled(!canReset)
             }
 
+            HStack {
+                if monitor.phase == .cliMissing || monitor.phase == .offline {
+                    Button("Retry Detection") { monitor.connect() }
+                }
+                Spacer()
+                Button("Quit") { NSApplication.shared.terminate(nil) }
+            }
+            .font(.caption)
+            if monitor.resetRecoveryBlocked {
+                statusNote("Reset recovery record is unreadable. New resets are blocked.", icon: "exclamationmark.triangle")
+                Button("Discard Recovery Record") { confirmsDiscard = true }
+            }
+        }
+    }
+
+    private var settingsSection: some View {
+        card {
             DisclosureGroup(isExpanded: $showsSettings) {
                 VStack(spacing: 0) {
                     HStack(spacing: 12) {
@@ -328,7 +424,7 @@ struct MonitorView: View {
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
-                        Spacer(minLength: 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         Toggle("Energy Saving Mode", isOn: Binding(
                             get: { monitor.energySavingMode },
                             set: { enabled in Task { await monitor.setEnergySavingMode(enabled) } }
@@ -337,8 +433,8 @@ struct MonitorView: View {
                         .disabled(monitor.isSwitchingMode || monitor.isRefreshing || monitor.isResetting
                                   || monitor.isSigningIn || monitor.isManualOperationInProgress)
                     }
-                    .padding(12)
-                    Divider().padding(.leading, 44)
+                    .padding(.vertical, 10)
+                    Divider()
                     HStack(spacing: 12) {
                         Image(systemName: "power")
                             .frame(width: 20)
@@ -351,33 +447,23 @@ struct MonitorView: View {
                         ))
                         .labelsHidden()
                     }
-                    .padding(12)
+                    .padding(.vertical, 10)
+                    if let path = monitor.codexPath {
+                        Divider()
+                        Text("Codex CLI: \(path)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 10)
+                    }
                 }
                 .font(.subheadline)
-                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
-                if let path = monitor.codexPath {
-                    Text("Codex CLI: \(path)")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .lineLimit(2)
-                }
+                .padding(.top, 6)
             } label: {
                 Label("Settings", systemImage: "gearshape")
-            }
-
-            HStack {
-                if monitor.phase == .cliMissing || monitor.phase == .offline {
-                    Button("Retry Detection") { monitor.connect() }
-                }
-                Spacer()
-                Button("Quit") { NSApplication.shared.terminate(nil) }
-            }
-            .font(.caption)
-            if monitor.resetRecoveryBlocked {
-                Text("Reset recovery record is unreadable. New resets are blocked.")
-                    .font(.caption)
-                Button("Discard Recovery Record") { confirmsDiscard = true }
+                    .font(.subheadline.weight(.medium))
             }
         }
     }

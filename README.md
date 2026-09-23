@@ -16,6 +16,7 @@ The app reads account and usage data through the local Codex App Server. It does
 - Shows used and remaining percentages with reset countdowns updated every second while the panel is visible.
 - In normal mode, refreshes quota when Codex reports a usage change, when an opened panel has data older than one minute, and through a full account-and-quota synchronization every five minutes.
 - Provides a manually refreshable, always-on-top floating window.
+- Uses matching macOS-style cards in the menu bar panel and floating window; widening the floating window places the five-hour and one-week cards side by side.
 - Supports optional launch at login.
 - Offers an Energy Saving Mode that pauses background updates and reads a new snapshot only when you select **Refresh**.
 - Detects signed-out, offline, stale-data, and missing-CLI states.
@@ -82,6 +83,7 @@ swift run CodexMonitor
 3. Select the menu bar item to view your five-hour and one-week summaries, plan, other quota windows, and reset countdowns.
 4. Use **Refresh** to request the latest account data immediately.
 5. Use **Floating Window** to keep the monitor above other windows.
+   Resize it for a wider two-card layout, or select **Close Window** in its footer to hide it.
 6. Enable **Launch at Login** if you want the monitor to start automatically.
 7. Quit the application from the menu bar panel when it is no longer needed.
 

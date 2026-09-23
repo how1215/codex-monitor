@@ -7,19 +7,20 @@ final class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegat
 
     func toggle<Content: View>(@ViewBuilder content: () -> Content) {
         if let panel, panel.isVisible {
-            panel.orderOut(nil)
-            panel.contentView = NSView()
+            hide()
             return
         }
 
         if panel == nil {
             let panel = NSPanel(
-                contentRect: NSRect(x: 0, y: 0, width: 380, height: 520),
-                styleMask: [.titled, .closable, .resizable, .utilityWindow],
+                contentRect: NSRect(x: 0, y: 0, width: 440, height: 560),
+                styleMask: [.titled, .closable, .resizable],
                 backing: .buffered,
                 defer: false
             )
             panel.title = "Codex Usage"
+            panel.titlebarAppearsTransparent = true
+            panel.backgroundColor = .windowBackgroundColor
             panel.isReleasedWhenClosed = false
             panel.delegate = self
             panel.level = .floating
@@ -36,6 +37,11 @@ final class FloatingPanelController: NSObject, ObservableObject, NSWindowDelegat
         }
         panel?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func hide() {
+        panel?.orderOut(nil)
+        panel?.contentView = NSView()
     }
 
     func windowWillClose(_ notification: Notification) {
