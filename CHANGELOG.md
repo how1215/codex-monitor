@@ -4,7 +4,15 @@ User-visible changes follow the Keep a Changelog format. Versions use Semantic V
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- An optional Energy Saving Mode that pauses background updates and stops the Codex App Server. Refresh reads a new snapshot on demand; the setting resets to off when the app restarts.
+- Distinct clock and calendar headings with a divider between the five-hour and one-week summaries.
+
+### Changed
+
+- In Energy Saving Mode, visible reset countdowns update by the minute until their final minute, then by the second. Sign-in and earned resets temporarily connect only while needed.
+- The panel removes the redundant five-hour window caption, separates resets and credits from quota, and groups settings into system-style rows.
 
 ## [0.5.0] - 2026-09-23
 

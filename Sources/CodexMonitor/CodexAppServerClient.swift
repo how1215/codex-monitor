@@ -2,6 +2,7 @@ import Foundation
 
 enum CodexServiceEvent: Equatable {
     case accountChanged
+    case loginCompleted(loginID: String, success: Bool, error: String?)
     case rateLimitsChanged
     case disconnected
     case protocolError(String)
@@ -14,8 +15,9 @@ protocol CodexService: AnyObject {
     func fetchAccount() async throws -> AccountSnapshot
     func fetchUsage() async throws -> UsageSnapshot
     func consumeReset(creditID: String?, idempotencyKey: String) async throws -> ResetOutcome
-    func beginChatGPTLogin() async throws -> URL
+    func beginChatGPTLogin() async throws -> BrowserLogin
     func beginDeviceCodeLogin() async throws -> DeviceCodeLogin
+    func cancelLogin(loginID: String) async throws
 }
 
 struct JSONLMessageBuffer {
@@ -125,20 +127,21 @@ actor CodexAppServerClient: CodexService {
         return outcome
     }
 
-    func beginChatGPTLogin() async throws -> URL {
+    func beginChatGPTLogin() async throws -> BrowserLogin {
         let result = try await request(method: "account/login/start", params: [
             "type": "chatgpt",
             "useHostedLoginSuccessPage": true,
             "appBrand": "codex"
         ])
         guard
+            let loginID = result["loginId"] as? String, !loginID.isEmpty,
             let rawURL = result["authUrl"] as? String,
             let url = URL(string: rawURL),
             Self.isAllowedAuthenticationURL(url)
         else {
             throw CodexMonitorError.invalidResponse("Login URL failed security validation")
         }
-        return url
+        return BrowserLogin(loginID: loginID, url: url)
     }
 
     func beginDeviceCodeLogin() async throws -> DeviceCodeLogin {
@@ -150,6 +153,10 @@ actor CodexAppServerClient: CodexService {
             throw CodexMonitorError.invalidResponse("Invalid device-code login response")
         }
         return DeviceCodeLogin(loginID: loginID, verificationURL: url, userCode: code)
+    }
+
+    func cancelLogin(loginID: String) async throws {
+        _ = try await request(method: "account/login/cancel", params: ["loginId": loginID])
     }
 
     private func launch() throws {
@@ -243,8 +250,12 @@ actor CodexAppServerClient: CodexService {
 
         guard let method = message["method"] as? String else { return }
         if method == "account/rateLimits/updated" { eventContinuation?.yield(.rateLimitsChanged) }
-        if method == "account/updated" || method == "account/login/completed" {
-            eventContinuation?.yield(.accountChanged)
+        if method == "account/updated" { eventContinuation?.yield(.accountChanged) }
+        if method == "account/login/completed", let params = message["params"] as? [String: Any],
+           let loginID = params["loginId"] as? String, let success = params["success"] as? Bool {
+            eventContinuation?.yield(.loginCompleted(
+                loginID: loginID, success: success, error: params["error"] as? String
+            ))
         }
     }
 

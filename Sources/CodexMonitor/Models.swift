@@ -35,6 +35,11 @@ struct DeviceCodeLogin: Equatable {
     let userCode: String
 }
 
+struct BrowserLogin: Equatable {
+    let loginID: String
+    let url: URL
+}
+
 struct AccountStatus: Equatable {
     let authType: String
     let email: String?

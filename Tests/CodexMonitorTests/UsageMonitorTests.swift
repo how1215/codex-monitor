@@ -160,6 +160,108 @@ struct UsageMonitorTests {
         await monitor.stop()
     }
 
+    @Test func energySavingModeStopsAutomaticReadsAndUsesManualRefresh() async {
+        let service = FakeCodexService()
+        let monitor = UsageMonitor(service: service, resetAttemptStore: makeResetStore(), pollingInterval: .milliseconds(50))
+        await waitUntil { monitor.phase == .ready }
+        await monitor.setEnergySavingMode(true)
+        let accountReads = service.accountFetchCount
+        let usageReads = service.usageFetchCount
+        #expect(!service.isRunning)
+
+        service.emit(.rateLimitsChanged)
+        try? await Task.sleep(for: .milliseconds(350))
+        await monitor.refreshIfNeededOnOpen(now: Date().addingTimeInterval(120))
+        #expect(service.accountFetchCount == accountReads)
+        #expect(service.usageFetchCount == usageReads)
+
+        await monitor.refresh()
+        #expect(service.accountFetchCount == accountReads + 1)
+        #expect(service.usageFetchCount == usageReads + 1)
+        #expect(!service.isRunning)
+
+        await monitor.setEnergySavingMode(false)
+        await waitUntil { service.accountFetchCount > accountReads + 1 }
+        #expect(service.isRunning)
+        await monitor.stop()
+    }
+
+    @Test func energySavingModeKeepsDeviceLoginAliveUntilCompletion() async {
+        let service = FakeCodexService(authType: "apiKey")
+        let monitor = UsageMonitor(service: service, resetAttemptStore: makeResetStore())
+        await waitUntil { monitor.phase == .unsupportedAuth }
+        await monitor.setEnergySavingMode(true)
+        await monitor.signInWithDeviceCode()
+        #expect(monitor.isSigningIn)
+        #expect(service.isRunning)
+        service.authType = "chatgpt"
+        service.emit(.loginCompleted(loginID: "login-1", success: true, error: nil))
+        await waitUntil { !monitor.isSigningIn && monitor.phase == .ready }
+        #expect(!service.isRunning)
+        await monitor.stop()
+    }
+
+    @Test func energySavingModeCancelsSignInAndStopsServer() async {
+        let service = FakeCodexService(authType: "apiKey")
+        let monitor = UsageMonitor(service: service, resetAttemptStore: makeResetStore())
+        await waitUntil { monitor.phase == .unsupportedAuth }
+        await monitor.setEnergySavingMode(true)
+        await monitor.signInWithDeviceCode()
+        #expect(service.isRunning)
+        await monitor.cancelLogin()
+        #expect(!monitor.isSigningIn)
+        #expect(monitor.deviceCodeLogin == nil)
+        #expect(!service.isRunning)
+        await monitor.stop()
+    }
+
+    @Test func energySavingModeDefaultsOffForNewMonitor() async {
+        let first = UsageMonitor(service: FakeCodexService(), resetAttemptStore: makeResetStore())
+        await waitUntil { first.phase == .ready }
+        await first.setEnergySavingMode(true)
+        #expect(first.energySavingMode)
+        await first.stop()
+
+        let second = UsageMonitor(service: FakeCodexService(), resetAttemptStore: makeResetStore())
+        #expect(!second.energySavingMode)
+        await second.stop()
+    }
+
+    @Test func energySavingModeResetUsesTemporaryConnection() async {
+        let service = FakeCodexService()
+        let monitor = UsageMonitor(service: service, resetAttemptStore: makeResetStore())
+        await waitUntil { monitor.phase == .ready }
+        await monitor.setEnergySavingMode(true)
+        await monitor.consumeReset()
+        #expect(service.idempotencyKeys.count == 1)
+        #expect(!service.isRunning)
+        await monitor.stop()
+    }
+
+    @Test func failedEnergySavingResetPreservesRecoveryAndStopsConnection() async throws {
+        let service = FakeCodexService(resetFailuresBeforeSuccess: 1)
+        let store = makeResetStore()
+        let monitor = UsageMonitor(service: service, resetAttemptStore: store)
+        await waitUntil { monitor.phase == .ready }
+        await monitor.setEnergySavingMode(true)
+        await monitor.consumeReset()
+        #expect(try store.load()?.idempotencyKey == service.idempotencyKeys.first)
+        #expect(!service.isRunning)
+        await monitor.stop()
+    }
+
+    @Test func savingCountdownUpdatesByMinuteThenBySecond() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        #expect(countdown(to: now.addingTimeInterval(3_600), now: now, energySaving: true) == "1h 0m")
+        #expect(countdown(to: now.addingTimeInterval(61), now: now, energySaving: true) == "2m")
+        #expect(countdown(to: now.addingTimeInterval(59), now: now, energySaving: true) == "59s")
+        let window = RateLimitWindow(id: "five", limitID: "codex", limitName: nil, kind: "primary",
+                                     usedPercent: 50, windowDurationMinutes: 300,
+                                     resetsAt: now.addingTimeInterval(61))
+        #expect(nextCountdownDelay(windows: [window], now: now) == 1)
+        #expect(nextCountdownDelay(windows: [], now: now) == nil)
+    }
+
     @Test func quotaEventSkipsAccountReadButAccountEventDoesNot() async {
         let service = FakeCodexService()
         let monitor = UsageMonitor(service: service, resetAttemptStore: makeResetStore())
@@ -216,9 +318,10 @@ private final class FakeCodexService: CodexService {
     var usageFetchCount = 0
     var accountFetchCount = 0
     var usageFailure: CodexMonitorError?
+    var isRunning = false
     private var eventContinuation: AsyncStream<CodexServiceEvent>.Continuation?
     private let availableResetCount: Int
-    private let authType: String
+    var authType: String
     private var resetFailuresBeforeSuccess: Int
     private let resetFailure: CodexMonitorError
 
@@ -234,8 +337,8 @@ private final class FakeCodexService: CodexService {
         AsyncStream { continuation in eventContinuation = continuation }
     }
     func emit(_ event: CodexServiceEvent) { eventContinuation?.yield(event) }
-    func start() async throws {}
-    func stop() async {}
+    func start() async throws { isRunning = true }
+    func stop() async { isRunning = false }
     func fetchAccount() async throws -> AccountSnapshot {
         accountFetchCount += 1
         return AccountSnapshot(account: AccountStatus(authType: authType, email: nil, planType: "plus"), requiresOpenAIAuth: true)
@@ -259,8 +362,11 @@ private final class FakeCodexService: CodexService {
         }
         return .reset
     }
-    func beginChatGPTLogin() async throws -> URL { URL(string: "https://chatgpt.com")! }
+    func beginChatGPTLogin() async throws -> BrowserLogin {
+        BrowserLogin(loginID: "login-1", url: URL(string: "https://chatgpt.com")!)
+    }
     func beginDeviceCodeLogin() async throws -> DeviceCodeLogin {
         DeviceCodeLogin(loginID: "login-1", verificationURL: URL(string: "https://auth.openai.com/codex/device")!, userCode: "ABCD-1234")
     }
+    func cancelLogin(loginID: String) async throws {}
 }

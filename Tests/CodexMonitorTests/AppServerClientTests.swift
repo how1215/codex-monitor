@@ -104,6 +104,33 @@ struct AppServerClientTests {
         await client.stop()
     }
 
+    @Test func browserLoginCarriesIDAndCompletionCanBeCancelled() async throws {
+        let transport = FakeAppServerTransport()
+        transport.onRequest = { message in
+            guard let id = message["id"] as? Int else { return }
+            switch message["method"] as? String {
+            case "account/login/start":
+                transport.reply(id: id, result: [
+                    "loginId": "login-1", "authUrl": "https://chatgpt.com/auth"
+                ])
+            case "account/login/cancel":
+                transport.reply(id: id, result: [:])
+            default: break
+            }
+        }
+        let client = CodexAppServerClient(transport: transport)
+        let events = await client.events()
+        try await client.start()
+        let login = try await client.beginChatGPTLogin()
+        #expect(login.loginID == "login-1")
+        #expect(login.url.host == "chatgpt.com")
+        transport.emit(Data("{\"method\":\"account/login/completed\",\"params\":{\"loginId\":\"login-1\",\"success\":true}}\n".utf8))
+        var iterator = events.makeAsyncIterator()
+        #expect(await iterator.next() == .loginCompleted(loginID: "login-1", success: true, error: nil))
+        try await client.cancelLogin(loginID: "login-1")
+        await client.stop()
+    }
+
     @Test func stopFailsPendingRequest() async throws {
         let transport = FakeAppServerTransport()
         let client = CodexAppServerClient(requestTimeout: .seconds(2), transport: transport)

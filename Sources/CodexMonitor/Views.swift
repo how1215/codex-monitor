@@ -1,6 +1,11 @@
 import AppKit
 import SwiftUI
 
+private struct CountdownTaskID: Equatable {
+    let fetchedAt: Date?
+    let showsOtherLimits: Bool
+}
+
 struct MonitorView: View {
     @ObservedObject var monitor: UsageMonitor
     let showFloatingWindow: () -> Void
@@ -8,8 +13,13 @@ struct MonitorView: View {
     @State private var confirmsReset = false
     @State private var confirmsDiscard = false
     @State private var isVisible = false
+    @State private var saverNow = Date()
     @State private var showsOtherLimits = false
     @State private var showsSettings = false
+
+    private var countdownTaskID: CountdownTaskID {
+        CountdownTaskID(fetchedAt: monitor.usage?.fetchedAt, showsOtherLimits: showsOtherLimits)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -54,6 +64,11 @@ struct MonitorView: View {
     private var details: some View {
         VStack(alignment: .leading, spacing: 12) {
             content
+            if monitor.energySavingMode {
+                Label("Updates paused · Select Refresh for current usage", systemImage: "pause.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             if let message = monitor.message {
                 Label(message, systemImage: "info.circle")
                     .font(.caption)
@@ -78,7 +93,7 @@ struct MonitorView: View {
                 .fill(statusColor)
                 .frame(width: 8, height: 8)
                 .accessibilityHidden(true)
-            Text(monitor.phase.label)
+            Text(monitor.energySavingMode ? "Manual mode" : monitor.phase.label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -87,6 +102,9 @@ struct MonitorView: View {
     @ViewBuilder
     private var content: some View {
         switch monitor.phase {
+        case .loading where monitor.energySavingMode:
+            EmptyStateView(icon: "pause.circle", title: "No saved usage",
+                           detail: "Select Refresh to load current quota.")
         case .loading:
             HStack { Spacer(); ProgressView(); Spacer() }
                 .padding(.vertical, 30)
@@ -123,7 +141,12 @@ struct MonitorView: View {
         VStack(alignment: .leading) {
             Button("Sign in with browser") { Task { await monitor.signIn() } }
                 .buttonStyle(.borderedProminent)
+                .disabled(monitor.isSigningIn)
             Button("Use device code instead") { Task { await monitor.signInWithDeviceCode() } }
+                .disabled(monitor.isSigningIn)
+            if monitor.isSigningIn {
+                Button("Cancel sign-in") { Task { await monitor.cancelLogin() } }
+            }
             if let login = monitor.deviceCodeLogin {
                 Text("Code: \(login.userCode)").textSelection(.enabled)
                 Button("Copy code") {
@@ -140,7 +163,18 @@ struct MonitorView: View {
 
     private var usageContent: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if isVisible && monitor.usage?.windows.isEmpty == false {
+            if isVisible && monitor.energySavingMode && monitor.usage?.windows.isEmpty == false {
+                usageWindows(now: saverNow)
+                    .task(id: countdownTaskID) {
+                        saverNow = Date()
+                        while !Task.isCancelled {
+                            guard let delay = nextCountdownDelay(windows: visibleCountdownWindows, now: saverNow) else { return }
+                            do { try await Task.sleep(for: .seconds(delay)) }
+                            catch { return }
+                            saverNow = Date()
+                        }
+                    }
+            } else if isVisible && monitor.usage?.windows.isEmpty == false {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     usageWindows(now: context.date)
                 }
@@ -162,6 +196,7 @@ struct MonitorView: View {
 
             if let usage = monitor.usage {
                 if let window = usage.oneWeekWindow {
+                    if usage.fiveHourWindow != nil { Divider() }
                     quotaSummary(window: window, now: now, compact: true)
                 }
                 let otherWindows = usage.windows.filter {
@@ -171,7 +206,8 @@ struct MonitorView: View {
                     DisclosureGroup("Other limits", isExpanded: $showsOtherLimits) {
                         VStack(alignment: .leading, spacing: 14) {
                             ForEach(otherWindows) { window in
-                                UsageWindowView(window: window, now: now, isCurrent: monitor.phase == .ready)
+                                UsageWindowView(window: window, now: now, isCurrent: monitor.phase == .ready,
+                                                energySavingMode: monitor.energySavingMode)
                             }
                         }
                         .padding(.top, 8)
@@ -182,29 +218,48 @@ struct MonitorView: View {
         }
     }
 
+    private var visibleCountdownWindows: [RateLimitWindow] {
+        guard let usage = monitor.usage else { return [] }
+        var windows = [usage.fiveHourWindow, usage.oneWeekWindow].compactMap { $0 }
+        if showsOtherLimits {
+            windows += usage.windows.filter {
+                $0.id != usage.fiveHourWindow?.id && $0.id != usage.oneWeekWindow?.id
+            }
+        }
+        return windows
+    }
+
     @ViewBuilder
     private var usageMetadata: some View {
         if let usage = monitor.usage {
-            HStack {
-                Label("Available resets", systemImage: "arrow.counterclockwise.circle")
-                Spacer()
-                Text("\(usage.availableResetCount)")
-                    .monospacedDigit()
+            Divider()
+            VStack(spacing: 10) {
+                HStack {
+                    Label("Available resets", systemImage: "arrow.counterclockwise.circle")
+                    Spacer()
+                    Text("\(usage.availableResetCount)")
+                        .monospacedDigit()
+                }
+                if let balance = usage.credits?.balance {
+                    HStack {
+                        Label("Credits", systemImage: "creditcard")
+                        Spacer()
+                        Text(balance).monospacedDigit()
+                    }
+                }
             }
             .font(.subheadline)
+            Divider()
 
-            if let balance = usage.credits?.balance {
-                HStack {
-                    Text("Credits")
-                    Spacer()
-                    Text(balance).monospacedDigit()
-                }
-                .font(.subheadline)
+            if monitor.energySavingMode {
+                Text("Updated \(usage.fetchedAt.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Updated \(usage.fetchedAt, style: .relative)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-
-            Text("Updated \(usage.fetchedAt, style: .relative)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             if monitor.phase == .stale {
                 Label("Showing last known data", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
                     .font(.caption)
@@ -215,23 +270,24 @@ struct MonitorView: View {
 
     private func quotaSummary(window: RateLimitWindow, now: Date, compact: Bool) -> some View {
         VStack(alignment: .leading, spacing: compact ? 5 : 8) {
-            Text(compact ? "1-week remaining" : "5-hour remaining")
+            Label(compact ? "1-week remaining" : "5-hour remaining",
+                  systemImage: compact ? "calendar" : "clock")
                 .font(compact ? .caption : .subheadline)
                 .foregroundStyle(.secondary)
             Text("\(Int(window.remainingPercent.rounded()))%")
                 .font(.system(size: compact ? 22 : 32, weight: .semibold).monospacedDigit())
                 .accessibilityLabel("\(window.durationLabel) quota \(Int(window.remainingPercent.rounded())) percent remaining")
             ProgressView(value: window.remainingPercent, total: 100)
-                .tint(monitor.phase == .ready
+                .tint(monitor.phase == .ready && !monitor.energySavingMode
                     ? MenuBarUsageLevel(usedPercent: window.usedPercent).usageColor : .gray)
                 .accessibilityLabel("\(window.durationLabel) quota remaining")
                 .accessibilityValue("\(Int(window.remainingPercent.rounded())) percent remaining")
             Text("\(Int(window.usedPercent.rounded()))% used")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("Resets in \(countdown(to: window.resetsAt, now: now))")
+            Text("Resets in \(countdown(to: window.resetsAt, now: now, energySaving: monitor.energySavingMode))")
                 .font(compact ? .caption.monospacedDigit() : .subheadline.monospacedDigit())
-            if !compact || window.title != window.durationLabel {
+            if compact && window.title != window.durationLabel {
                 Text(window.title)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -247,7 +303,8 @@ struct MonitorView: View {
                 } label: {
                     Label(monitor.isRefreshing ? "Refreshing" : "Refresh", systemImage: "arrow.clockwise")
                 }
-                .disabled(monitor.isRefreshing || monitor.phase == .loading)
+                .disabled(monitor.isRefreshing || monitor.isManualOperationInProgress || monitor.isSwitchingMode
+                          || (monitor.phase == .loading && !monitor.energySavingMode))
 
                 Button("Floating Window", systemImage: "macwindow.on.rectangle") {
                     showFloatingWindow()
@@ -259,11 +316,45 @@ struct MonitorView: View {
                     .disabled(!canReset)
             }
 
-            DisclosureGroup("Settings & diagnostics", isExpanded: $showsSettings) {
-                Toggle("Launch at Login", isOn: Binding(
-                    get: { monitor.launchAtLogin },
-                    set: { monitor.setLaunchAtLogin($0) }
-                ))
+            DisclosureGroup(isExpanded: $showsSettings) {
+                VStack(spacing: 0) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "leaf")
+                            .frame(width: 20)
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Energy Saving Mode")
+                            Text("Update usage only when you select Refresh")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        Toggle("Energy Saving Mode", isOn: Binding(
+                            get: { monitor.energySavingMode },
+                            set: { enabled in Task { await monitor.setEnergySavingMode(enabled) } }
+                        ))
+                        .labelsHidden()
+                        .disabled(monitor.isSwitchingMode || monitor.isRefreshing || monitor.isResetting
+                                  || monitor.isSigningIn || monitor.isManualOperationInProgress)
+                    }
+                    .padding(12)
+                    Divider().padding(.leading, 44)
+                    HStack(spacing: 12) {
+                        Image(systemName: "power")
+                            .frame(width: 20)
+                            .foregroundStyle(.secondary)
+                        Text("Launch at Login")
+                        Spacer(minLength: 8)
+                        Toggle("Launch at Login", isOn: Binding(
+                            get: { monitor.launchAtLogin },
+                            set: { monitor.setLaunchAtLogin($0) }
+                        ))
+                        .labelsHidden()
+                    }
+                    .padding(12)
+                }
+                .font(.subheadline)
+                .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
                 if let path = monitor.codexPath {
                     Text("Codex CLI: \(path)")
                         .font(.caption2)
@@ -271,8 +362,9 @@ struct MonitorView: View {
                         .textSelection(.enabled)
                         .lineLimit(2)
                 }
+            } label: {
+                Label("Settings", systemImage: "gearshape")
             }
-            .font(.caption)
 
             HStack {
                 if monitor.phase == .cliMissing || monitor.phase == .offline {
@@ -292,7 +384,8 @@ struct MonitorView: View {
 
     private var canReset: Bool {
         ((monitor.usage?.availableResetCount ?? 0) > 0 || monitor.hasPendingResetAttempt)
-            && !monitor.isResetting && !monitor.resetRecoveryBlocked
+            && !monitor.isResetting && !monitor.isManualOperationInProgress
+            && !monitor.isSigningIn && !monitor.isSwitchingMode && !monitor.resetRecoveryBlocked
     }
 
     private var resetConfirmationMessage: String {
@@ -308,7 +401,8 @@ struct MonitorView: View {
     }
 
     private var statusColor: Color {
-        switch monitor.phase {
+        if monitor.energySavingMode { return .gray }
+        return switch monitor.phase {
         case .ready: .green
         case .loading: .blue
         case .stale: .orange
@@ -321,6 +415,7 @@ private struct UsageWindowView: View {
     let window: RateLimitWindow
     let now: Date
     let isCurrent: Bool
+    let energySavingMode: Bool
 
     var body: some View {
             VStack(alignment: .leading, spacing: 7) {
@@ -339,7 +434,7 @@ private struct UsageWindowView: View {
                 HStack {
                     Text("\(window.remainingPercent, specifier: "%.0f")% remaining")
                     Spacer()
-                    Text("Resets in \(countdown(to: window.resetsAt, now: now))")
+                    Text("Resets in \(countdown(to: window.resetsAt, now: now, energySaving: energySavingMode))")
                 }
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
@@ -347,11 +442,22 @@ private struct UsageWindowView: View {
     }
 
     private var progressColor: Color {
-        isCurrent ? MenuBarUsageLevel(usedPercent: window.usedPercent).usageColor : .gray
+        isCurrent && !energySavingMode ? MenuBarUsageLevel(usedPercent: window.usedPercent).usageColor : .gray
     }
 }
 
-private func countdown(to date: Date, now: Date) -> String {
+func countdown(to date: Date, now: Date, energySaving: Bool) -> String {
+    if energySaving {
+        let remaining = max(0, date.timeIntervalSince(now))
+        if remaining < 60 { return "\(Int(ceil(remaining)))s" }
+        let totalMinutes = Int(ceil(remaining / 60))
+        let days = totalMinutes / 1_440
+        let hours = (totalMinutes % 1_440) / 60
+        let minutes = totalMinutes % 60
+        if days > 0 { return "\(days)d \(hours)h \(minutes)m" }
+        if hours > 0 { return "\(hours)h \(minutes)m" }
+        return "\(minutes)m"
+    }
     let seconds = max(0, Int(date.timeIntervalSince(now)))
     let days = seconds / 86_400
     let hours = (seconds % 86_400) / 3_600
@@ -360,6 +466,16 @@ private func countdown(to date: Date, now: Date) -> String {
     if days > 0 { return "\(days)d \(hours)h \(minutes)m" }
     if hours > 0 { return "\(hours)h \(minutes)m \(remainingSeconds)s" }
     return "\(minutes)m \(remainingSeconds)s"
+}
+
+func nextCountdownDelay(windows: [RateLimitWindow], now: Date) -> TimeInterval? {
+    windows.compactMap { window -> TimeInterval? in
+        let remaining = window.resetsAt.timeIntervalSince(now)
+        guard remaining > 0 else { return nil }
+        let interval = remaining > 60 ? 60.0 : 1.0
+        let nextRemaining = floor((remaining - 0.001) / interval) * interval
+        return max(0.05, remaining - nextRemaining)
+    }.min()
 }
 
 private extension MenuBarUsageLevel {

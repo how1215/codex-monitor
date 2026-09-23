@@ -52,14 +52,17 @@ struct CodexMonitorApp: App {
 
     private var menuAccessibilityLabel: String {
         guard let remaining = monitor.usage?.fiveHourRemainingPercent else {
-            return "Codex 5-hour remaining quota unavailable"
+            return monitor.energySavingMode
+                ? "Codex usage updates paused. Open the panel and select Refresh."
+                : "Codex 5-hour remaining quota unavailable"
         }
-        let status = monitor.phase == .ready ? "current" : "may be stale"
+        let status = monitor.energySavingMode ? "updates paused" :
+            (monitor.phase == .ready ? "current" : "may be stale")
         return "Codex 5-hour quota \(Int(remaining.rounded())) percent remaining, \(status)"
     }
 
     private var menuStatusImage: NSImage {
-        let level = monitor.phase == .ready
+        let level = monitor.phase == .ready && !monitor.energySavingMode
             ? MenuBarUsageLevel(usedPercent: monitor.usage?.fiveHourWindow?.usedPercent)
             : .unavailable
         let color: NSColor

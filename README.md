@@ -14,9 +14,10 @@ The app reads account and usage data through the local Codex App Server. It does
 - Displays the subscription plan and every rate-limit window returned by Codex.
 - Leads with the most constrained five-hour window's remaining quota and reset countdown, followed by a compact one-week summary when available; other windows are available in an expandable section.
 - Shows used and remaining percentages with reset countdowns updated every second while the panel is visible.
-- Refreshes quota when Codex reports a usage change, when an opened panel has data older than one minute, and through a full account-and-quota synchronization every five minutes.
+- In normal mode, refreshes quota when Codex reports a usage change, when an opened panel has data older than one minute, and through a full account-and-quota synchronization every five minutes.
 - Provides a manually refreshable, always-on-top floating window.
 - Supports optional launch at login.
+- Offers an Energy Saving Mode that pauses background updates and reads a new snapshot only when you select **Refresh**.
 - Detects signed-out, offline, stale-data, and missing-CLI states.
 - Allows an available earned reset to be redeemed after confirmation.
 - Recovers safely from interrupted reset requests by reusing the original idempotency key.
@@ -101,6 +102,14 @@ The monitor reads usage with `account/rateLimits/read` and listens for `account/
 To keep the menu bar compact, the visible item contains only a colored dot and remaining percentage. Hover help and the accessibility label identify it as Codex five-hour quota remaining. A gray dot means the value is unavailable or may be stale. The panel uses the same 50% and 80% used thresholds for its progress bars.
 
 Backend reporting can be delayed, so values may not change immediately after an individual Codex request.
+
+## Energy Saving Mode
+
+Enable **Energy Saving Mode** under **Settings** to stop the local Codex App Server and pause automatic usage updates. The menu bar keeps the last reported percentage with a gray status dot and an "updates paused" hint. Opening the menu bar or floating window does not fetch data; select **Refresh** to read the current account and quota once. After the read, the App Server stops again. If no snapshot exists yet, the menu bar shows `--%`.
+
+The five-hour and one-week summaries have clock and calendar headings separated by a line. While Energy Saving Mode is on, their reset countdowns update by the minute, then by the second during the final minute. The countdown is calculated from the last snapshot and does not mean that the quota itself has been refreshed.
+
+Sign-in and **Use Reset** remain available. They temporarily start the App Server; an active sign-in keeps it running until completion, cancellation, or a ten-minute timeout. Energy Saving Mode is off each time the app starts. Turning it off restores event updates, the five-minute fallback poll, and automatic reconnection.
 
 ## Reset Safety
 
