@@ -46,21 +46,21 @@ struct CodexMonitorApp: App {
     }
 
     private var menuTitle: String {
-        guard let used = monitor.usage?.fiveHourUsedPercent else { return "--%" }
-        return "\(Int(used.rounded()))%"
+        guard let remaining = monitor.usage?.fiveHourRemainingPercent else { return "--%" }
+        return "\(Int(remaining.rounded()))%"
     }
 
     private var menuAccessibilityLabel: String {
-        guard let used = monitor.usage?.fiveHourUsedPercent else {
-            return "Codex 5-hour usage unavailable"
+        guard let remaining = monitor.usage?.fiveHourRemainingPercent else {
+            return "Codex 5-hour remaining quota unavailable"
         }
         let status = monitor.phase == .ready ? "current" : "may be stale"
-        return "Codex 5-hour usage \(Int(used.rounded())) percent, \(status)"
+        return "Codex 5-hour quota \(Int(remaining.rounded())) percent remaining, \(status)"
     }
 
     private var menuStatusImage: NSImage {
         let level = monitor.phase == .ready
-            ? MenuBarUsageLevel(usedPercent: monitor.usage?.fiveHourUsedPercent)
+            ? MenuBarUsageLevel(usedPercent: monitor.usage?.fiveHourWindow?.usedPercent)
             : .unavailable
         let color: NSColor
         switch level {

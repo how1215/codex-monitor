@@ -18,6 +18,7 @@ final class UsageMonitor: ObservableObject {
 
     private let service: CodexService
     private let resetAttemptStore: ResetAttemptStore
+    private let pollingInterval: Duration
     private var eventTask: Task<Void, Never>?
     private var connectionTask: Task<Void, Never>?
     private var pollingTask: Task<Void, Never>?
@@ -27,15 +28,18 @@ final class UsageMonitor: ObservableObject {
     private var refreshRequested = false
     private var refreshNeedsAccount = false
     private var eventNeedsAccount = false
+    private var lastPanelOpenRefreshAt: Date?
     private var hasStarted = false
     private var wakeObserver: NSObjectProtocol?
 
     init(
         service: CodexService = CodexAppServerClient(),
-        resetAttemptStore: ResetAttemptStore? = nil
+        resetAttemptStore: ResetAttemptStore? = nil,
+        pollingInterval: Duration = .seconds(300)
     ) {
         self.service = service
         self.resetAttemptStore = resetAttemptStore ?? ResetAttemptStore()
+        self.pollingInterval = pollingInterval
         do { hasPendingResetAttempt = try self.resetAttemptStore.load() != nil }
         catch { resetRecoveryBlocked = true }
         launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -82,6 +86,16 @@ final class UsageMonitor: ObservableObject {
 
     func refresh() async {
         await refresh(includeAccount: true)
+    }
+
+    func refreshIfNeededOnOpen(now: Date = Date()) async {
+        guard let fetchedAt = usage?.fetchedAt,
+              now.timeIntervalSince(fetchedAt) > 60,
+              lastPanelOpenRefreshAt.map({ now.timeIntervalSince($0) > 60 }) ?? true,
+              !isRefreshing,
+              phase == .ready || phase == .stale else { return }
+        lastPanelOpenRefreshAt = now
+        await refresh(includeAccount: false)
     }
 
     private func refresh(includeAccount: Bool) async {
@@ -264,10 +278,11 @@ final class UsageMonitor: ObservableObject {
 
     private func startPolling() {
         pollingTask?.cancel()
+        let pollingInterval = self.pollingInterval
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
                 do {
-                    try await Task.sleep(for: .seconds(60))
+                    try await Task.sleep(for: pollingInterval)
                 } catch {
                     return
                 }

@@ -92,20 +92,72 @@ struct UsageMonitorTests {
         #expect(ReconnectPolicy.delaySeconds(forAttempt: 20, jitter: 0) == 30)
     }
 
-    @Test func menuBarUsesHighestFiveHourWindowAndExactThresholds() {
+    @Test func fiveHourSummaryUsesMostConstrainedWindowAndExactThresholds() {
         let now = Date()
         let windows = [
             RateLimitWindow(id: "short", limitID: "codex", limitName: nil, kind: "primary", usedPercent: 95, windowDurationMinutes: 60, resetsAt: now),
             RateLimitWindow(id: "five-a", limitID: "codex", limitName: nil, kind: "primary", usedPercent: 49.9, windowDurationMinutes: 300, resetsAt: now),
-            RateLimitWindow(id: "five-b", limitID: "other", limitName: nil, kind: "primary", usedPercent: 80, windowDurationMinutes: 300, resetsAt: now)
+            RateLimitWindow(id: "five-b", limitID: "other", limitName: nil, kind: "primary", usedPercent: 80, windowDurationMinutes: 300, resetsAt: now.addingTimeInterval(600)),
+            RateLimitWindow(id: "five-c", limitID: "third", limitName: nil, kind: "primary", usedPercent: 80, windowDurationMinutes: 300, resetsAt: now.addingTimeInterval(300))
         ]
         let snapshot = UsageSnapshot(windows: windows, resetCredits: [], availableResetCount: 0, credits: nil, fetchedAt: now)
-        #expect(snapshot.fiveHourUsedPercent == 80)
+        #expect(snapshot.fiveHourWindow?.id == "five-c")
+        #expect(snapshot.fiveHourWindow?.usedPercent == 80)
+        #expect(snapshot.fiveHourRemainingPercent == 20)
+        #expect(snapshot.fiveHourWindow?.resetsAt == now.addingTimeInterval(300))
+        let noFiveHour = UsageSnapshot(windows: [windows[0]], resetCredits: [], availableResetCount: 0, credits: nil, fetchedAt: now)
+        #expect(noFiveHour.fiveHourWindow == nil)
+        #expect(noFiveHour.fiveHourRemainingPercent == nil)
         #expect(MenuBarUsageLevel(usedPercent: nil) == .unavailable)
         #expect(MenuBarUsageLevel(usedPercent: 49.9) == .normal)
         #expect(MenuBarUsageLevel(usedPercent: 50) == .warning)
         #expect(MenuBarUsageLevel(usedPercent: 79.9) == .warning)
         #expect(MenuBarUsageLevel(usedPercent: 80) == .critical)
+    }
+
+    @Test func openingPanelRefreshesOnlyWhenUsageIsOlderThanOneMinute() async {
+        let service = FakeCodexService()
+        let monitor = UsageMonitor(service: service, resetAttemptStore: makeResetStore())
+        await waitUntil { monitor.phase == .ready }
+        let fetchedAt = monitor.usage!.fetchedAt
+        let originalUsageReads = service.usageFetchCount
+        let originalAccountReads = service.accountFetchCount
+
+        await monitor.refreshIfNeededOnOpen(now: fetchedAt.addingTimeInterval(60))
+        #expect(service.usageFetchCount == originalUsageReads)
+        await monitor.refreshIfNeededOnOpen(now: fetchedAt.addingTimeInterval(61))
+        #expect(service.usageFetchCount == originalUsageReads + 1)
+        #expect(service.accountFetchCount == originalAccountReads)
+        await monitor.stop()
+    }
+
+    @Test func failedPanelOpenRefreshIsThrottled() async {
+        let service = FakeCodexService()
+        let monitor = UsageMonitor(service: service, resetAttemptStore: makeResetStore())
+        await waitUntil { monitor.phase == .ready }
+        let firstOpen = monitor.usage!.fetchedAt.addingTimeInterval(61)
+        service.usageFailure = .disconnected
+
+        await monitor.refreshIfNeededOnOpen(now: firstOpen)
+        let readsAfterFailure = service.usageFetchCount
+        #expect(monitor.phase == .stale)
+        await monitor.refreshIfNeededOnOpen(now: firstOpen.addingTimeInterval(30))
+        #expect(service.usageFetchCount == readsAfterFailure)
+        await monitor.refreshIfNeededOnOpen(now: firstOpen.addingTimeInterval(61))
+        #expect(service.usageFetchCount == readsAfterFailure + 1)
+        await monitor.stop()
+    }
+
+    @Test func fallbackPollingRefreshesAccountAndUsage() async {
+        let service = FakeCodexService()
+        let monitor = UsageMonitor(service: service, resetAttemptStore: makeResetStore(), pollingInterval: .milliseconds(50))
+        await waitUntil { monitor.phase == .ready }
+        let accountReads = service.accountFetchCount
+        let usageReads = service.usageFetchCount
+        await waitUntil { service.accountFetchCount > accountReads && service.usageFetchCount > usageReads }
+        #expect(service.accountFetchCount > accountReads)
+        #expect(service.usageFetchCount > usageReads)
+        await monitor.stop()
     }
 
     @Test func quotaEventSkipsAccountReadButAccountEventDoesNot() async {
@@ -163,6 +215,7 @@ private final class FakeCodexService: CodexService {
     var idempotencyKeys: [String] = []
     var usageFetchCount = 0
     var accountFetchCount = 0
+    var usageFailure: CodexMonitorError?
     private var eventContinuation: AsyncStream<CodexServiceEvent>.Continuation?
     private let availableResetCount: Int
     private let authType: String
@@ -189,6 +242,7 @@ private final class FakeCodexService: CodexService {
     }
     func fetchUsage() async throws -> UsageSnapshot {
         usageFetchCount += 1
+        if let usageFailure { throw usageFailure }
         let resets = availableResetCount > 0 ? [ResetCredit(
             id: "reset-1", resetType: "codexRateLimits", status: "available", grantedAt: nil,
             expiresAt: nil, title: nil, description: nil

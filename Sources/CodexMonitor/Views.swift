@@ -8,6 +8,7 @@ struct MonitorView: View {
     @State private var confirmsReset = false
     @State private var confirmsDiscard = false
     @State private var isVisible = false
+    @State private var showsOtherLimits = false
     @State private var showsSettings = false
 
     var body: some View {
@@ -25,7 +26,10 @@ struct MonitorView: View {
         }
         .padding(18)
         .frame(minWidth: 340, idealWidth: 360, maxWidth: .infinity)
-        .onAppear { isVisible = true }
+        .onAppear {
+            isVisible = true
+            Task { await monitor.refreshIfNeededOnOpen() }
+        }
         .onDisappear { isVisible = false }
         .confirmationDialog(
             "Use an earned reset?",
@@ -136,47 +140,101 @@ struct MonitorView: View {
 
     private var usageContent: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if let windows = monitor.usage?.windows, !windows.isEmpty {
-                if isVisible {
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
-                        ForEach(windows) { window in
-                            UsageWindowView(window: window, now: context.date)
-                        }
-                    }
-                } else {
-                    ForEach(windows) { window in UsageWindowView(window: window, now: .now) }
+            if isVisible && monitor.usage?.windows.isEmpty == false {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    usageWindows(now: context.date)
                 }
             } else {
-                Text("No usage windows were returned.")
+                usageWindows(now: .now)
+            }
+            usageMetadata
+        }
+    }
+
+    private func usageWindows(now: Date) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let window = monitor.usage?.fiveHourWindow {
+                quotaSummary(window: window, now: now, compact: false)
+            } else {
+                Text("5-hour limit unavailable")
                     .foregroundStyle(.secondary)
             }
 
             if let usage = monitor.usage {
-                HStack {
-                    Label("Available resets", systemImage: "arrow.counterclockwise.circle")
-                    Spacer()
-                    Text("\(usage.availableResetCount)")
-                        .monospacedDigit()
+                if let window = usage.oneWeekWindow {
+                    quotaSummary(window: window, now: now, compact: true)
                 }
-                .font(.subheadline)
-
-                if let balance = usage.credits?.balance {
-                    HStack {
-                        Text("Credits")
-                        Spacer()
-                        Text(balance).monospacedDigit()
+                let otherWindows = usage.windows.filter {
+                    $0.id != usage.fiveHourWindow?.id && $0.id != usage.oneWeekWindow?.id
+                }
+                if !otherWindows.isEmpty {
+                    DisclosureGroup("Other limits", isExpanded: $showsOtherLimits) {
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(otherWindows) { window in
+                                UsageWindowView(window: window, now: now, isCurrent: monitor.phase == .ready)
+                            }
+                        }
+                        .padding(.top, 8)
                     }
                     .font(.subheadline)
                 }
+            }
+        }
+    }
 
-                Text("Updated \(usage.fetchedAt, style: .relative)")
+    @ViewBuilder
+    private var usageMetadata: some View {
+        if let usage = monitor.usage {
+            HStack {
+                Label("Available resets", systemImage: "arrow.counterclockwise.circle")
+                Spacer()
+                Text("\(usage.availableResetCount)")
+                    .monospacedDigit()
+            }
+            .font(.subheadline)
+
+            if let balance = usage.credits?.balance {
+                HStack {
+                    Text("Credits")
+                    Spacer()
+                    Text(balance).monospacedDigit()
+                }
+                .font(.subheadline)
+            }
+
+            Text("Updated \(usage.fetchedAt, style: .relative)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if monitor.phase == .stale {
+                Label("Showing last known data", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    private func quotaSummary(window: RateLimitWindow, now: Date, compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: compact ? 5 : 8) {
+            Text(compact ? "1-week remaining" : "5-hour remaining")
+                .font(compact ? .caption : .subheadline)
+                .foregroundStyle(.secondary)
+            Text("\(Int(window.remainingPercent.rounded()))%")
+                .font(.system(size: compact ? 22 : 32, weight: .semibold).monospacedDigit())
+                .accessibilityLabel("\(window.durationLabel) quota \(Int(window.remainingPercent.rounded())) percent remaining")
+            ProgressView(value: window.remainingPercent, total: 100)
+                .tint(monitor.phase == .ready
+                    ? MenuBarUsageLevel(usedPercent: window.usedPercent).usageColor : .gray)
+                .accessibilityLabel("\(window.durationLabel) quota remaining")
+                .accessibilityValue("\(Int(window.remainingPercent.rounded())) percent remaining")
+            Text("\(Int(window.usedPercent.rounded()))% used")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("Resets in \(countdown(to: window.resetsAt, now: now))")
+                .font(compact ? .caption.monospacedDigit() : .subheadline.monospacedDigit())
+            if !compact || window.title != window.durationLabel {
+                Text(window.title)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if monitor.phase == .stale {
-                    Label("Showing last known data", systemImage: "exclamationmark.arrow.triangle.2.circlepath")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
             }
         }
     }
@@ -262,6 +320,7 @@ struct MonitorView: View {
 private struct UsageWindowView: View {
     let window: RateLimitWindow
     let now: Date
+    let isCurrent: Bool
 
     var body: some View {
             VStack(alignment: .leading, spacing: 7) {
@@ -288,22 +347,29 @@ private struct UsageWindowView: View {
     }
 
     private var progressColor: Color {
-        switch window.usedPercent {
-        case 90...: .red
-        case 70...: .orange
-        default: .accentColor
-        }
+        isCurrent ? MenuBarUsageLevel(usedPercent: window.usedPercent).usageColor : .gray
     }
+}
 
-    private func countdown(to date: Date, now: Date) -> String {
-        let seconds = max(0, Int(date.timeIntervalSince(now)))
-        let days = seconds / 86_400
-        let hours = (seconds % 86_400) / 3_600
-        let minutes = (seconds % 3_600) / 60
-        let remainingSeconds = seconds % 60
-        if days > 0 { return "\(days)d \(hours)h \(minutes)m" }
-        if hours > 0 { return "\(hours)h \(minutes)m \(remainingSeconds)s" }
-        return "\(minutes)m \(remainingSeconds)s"
+private func countdown(to date: Date, now: Date) -> String {
+    let seconds = max(0, Int(date.timeIntervalSince(now)))
+    let days = seconds / 86_400
+    let hours = (seconds % 86_400) / 3_600
+    let minutes = (seconds % 3_600) / 60
+    let remainingSeconds = seconds % 60
+    if days > 0 { return "\(days)d \(hours)h \(minutes)m" }
+    if hours > 0 { return "\(hours)h \(minutes)m \(remainingSeconds)s" }
+    return "\(minutes)m \(remainingSeconds)s"
+}
+
+private extension MenuBarUsageLevel {
+    var usageColor: Color {
+        switch self {
+        case .normal: .green
+        case .warning: .yellow
+        case .critical: .red
+        case .unavailable: .gray
+        }
     }
 }
 

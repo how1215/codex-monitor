@@ -6,6 +6,15 @@ User-visible changes follow the Keep a Changelog format. Versions use Semantic V
 
 No changes yet.
 
+## [0.5.0] - 2026-09-23
+
+### Changed
+
+- The menu bar now shows five-hour quota remaining instead of quota used. Its accessibility label and hover help state the new meaning.
+- The panel leads with the most constrained five-hour window's remaining quota and reset countdown. The one-week window appears beneath it in a compact summary; other windows are available in an expandable section.
+- The menu bar, summary, and window progress bars use the same warning thresholds: 50% and 80% used.
+- Full fallback synchronization now runs every five minutes. Opening a panel refreshes quota in the background when the last successful read is over one minute old.
+
 ## [0.4.0] - 2026-09-16
 
 ### Added

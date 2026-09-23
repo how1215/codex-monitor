@@ -102,8 +102,16 @@ struct UsageSnapshot: Equatable {
     let fetchedAt: Date
 
     var nextReset: Date? { windows.map(\.resetsAt).min() }
-    var fiveHourUsedPercent: Double? {
-        windows.filter { $0.windowDurationMinutes == 300 }.map(\.usedPercent).max()
+    var fiveHourWindow: RateLimitWindow? { mostConstrainedWindow(durationMinutes: 300) }
+    var oneWeekWindow: RateLimitWindow? { mostConstrainedWindow(durationMinutes: 10_080) }
+    var fiveHourRemainingPercent: Double? { fiveHourWindow?.remainingPercent }
+
+    private func mostConstrainedWindow(durationMinutes: Int) -> RateLimitWindow? {
+        windows.filter { $0.windowDurationMinutes == durationMinutes }.sorted {
+            if $0.usedPercent != $1.usedPercent { return $0.usedPercent > $1.usedPercent }
+            if $0.resetsAt != $1.resetsAt { return $0.resetsAt < $1.resetsAt }
+            return $0.id < $1.id
+        }.first
     }
 }
 

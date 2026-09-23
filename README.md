@@ -10,10 +10,11 @@ The app reads account and usage data through the local Codex App Server. It does
 
 ## Features
 
-- Shows five-hour usage directly in the macOS menu bar, with green (under 50%), yellow (50–79%), red (80% or more), or gray (unavailable/stale) status.
+- Shows five-hour quota remaining directly in the macOS menu bar, with green (under 50% used), yellow (50–79% used), red (80% or more used), or gray (unavailable/stale) status.
 - Displays the subscription plan and every rate-limit window returned by Codex.
-- Shows used and remaining percentages with reset countdowns updated every second.
-- Refreshes quota when Codex reports a usage change and performs a full account-and-quota synchronization every 60 seconds.
+- Leads with the most constrained five-hour window's remaining quota and reset countdown, followed by a compact one-week summary when available; other windows are available in an expandable section.
+- Shows used and remaining percentages with reset countdowns updated every second while the panel is visible.
+- Refreshes quota when Codex reports a usage change, when an opened panel has data older than one minute, and through a full account-and-quota synchronization every five minutes.
 - Provides a manually refreshable, always-on-top floating window.
 - Supports optional launch at login.
 - Detects signed-out, offline, stale-data, and missing-CLI states.
@@ -76,8 +77,8 @@ swift run CodexMonitor
 ## Usage
 
 1. Start Codex Monitor.
-2. Look for the gauge icon and usage percentage in the macOS menu bar.
-3. Select the menu bar item to view your plan, quota windows, remaining usage, and reset countdowns.
+2. Look for the colored dot and five-hour quota remaining percentage in the macOS menu bar.
+3. Select the menu bar item to view your five-hour and one-week summaries, plan, other quota windows, and reset countdowns.
 4. Use **Refresh** to request the latest account data immediately.
 5. Use **Floating Window** to keep the monitor above other windows.
 6. Enable **Launch at Login** if you want the monitor to start automatically.
@@ -89,13 +90,15 @@ The application interface is in English.
 
 The monitor reads usage with `account/rateLimits/read` and listens for `account/rateLimits/updated` events from the local Codex App Server.
 
-- Server events trigger an immediate refresh.
-- A fallback poll runs every 60 seconds.
+- Server events trigger a refresh after a 250 ms coalescing window.
+- A fallback full account-and-quota poll runs every five minutes.
+- Opening the menu bar or floating panel refreshes quota in the background if the last successful read is over one minute old.
 - Reset countdowns are calculated locally from the official `resetsAt` timestamp and update every second.
 - The app displays the values reported by the Codex backend; it does not estimate subscription usage from local token counts.
-- Several five-hour windows may be returned; the menu bar uses the highest reported usage among them. If none is available, it displays a neutral status.
+- Several five-hour windows may be returned; the menu bar and summary use the window with the highest reported usage and show its remaining quota. Ties use the earliest reset time. If none is available, the menu bar displays a neutral status and the panel says the five-hour limit is unavailable.
+- The one-week summary uses the same remaining bar, used percentage, and reset countdown as the five-hour summary. If several one-week windows are returned, it uses the most constrained one. If none is returned, the one-week summary is hidden.
 
-To keep the menu bar compact, the visible item contains only a colored dot and percentage. Hover help and the accessibility label identify it as Codex five-hour usage. A gray dot means the value is unavailable or may be stale.
+To keep the menu bar compact, the visible item contains only a colored dot and remaining percentage. Hover help and the accessibility label identify it as Codex five-hour quota remaining. A gray dot means the value is unavailable or may be stale. The panel uses the same 50% and 80% used thresholds for its progress bars.
 
 Backend reporting can be delayed, so values may not change immediately after an individual Codex request.
 
